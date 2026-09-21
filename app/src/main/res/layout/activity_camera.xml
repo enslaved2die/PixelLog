@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:keepScreenOn="true">
+
+    <!-- 4:3 Open-Gate Viewfinder SurfaceView -->
+    <SurfaceView
+        android:id="@+id/viewfinderSurface"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintDimensionRatio="4:3"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Top Status Bar -->
+    <LinearLayout
+        android:id="@+id/topBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="#80000000"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/textGateResolution"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="4080x3072 4:3 OPEN GATE"
+            android:textColor="#00E5FF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textDcgMode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="12dp"
+            android:text="DCG: LCG"
+            android:textColor="#76FF03"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textTimecode"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00:00:00"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Cinema Quick Control Bar -->
+    <HorizontalScrollView
+        android:id="@+id/quickControlsBar"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:scrollbars="none"
+        android:layout_marginTop="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/topBar">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnToggleLut"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="LUT: Rec.709 ON"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnLogCurve"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="CURVE: PIXEL-LOG"
+                android:textColor="#00E5FF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnFramerate"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="FPS: 30"
+                android:textColor="#76FF03"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnCodec"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginEnd="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="CODEC: HEVC"
+                android:textColor="#FFD600"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnBitrate"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="140 MBPS"
+                android:textColor="#FF6D00"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnTorch"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="TORCH: OFF"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnMic"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="6dp"
+                android:background="#C0202020"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="MIC: AUTO (INT)"
+                android:textColor="#00E5FF"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Audio VU Level Meter Panel -->
+    <LinearLayout
+        android:id="@+id/panelAudioMeter"
+        android:layout_width="170dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:layout_marginTop="8dp"
+        android:background="#99111111"
+        android:orientation="vertical"
+        android:padding="6dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/quickControlsBar">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="38dp"
+                android:layout_height="wrap_content"
+                android:text="CH1 L"
+                android:textColor="#AAAAAA"
+                android:textSize="9sp" />
+
+            <ProgressBar
+                android:id="@+id/progressAudioL"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="6dp"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#76FF03" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="38dp"
+                android:layout_height="wrap_content"
+                android:text="CH2 R"
+                android:textColor="#AAAAAA"
+                android:textSize="9sp" />
+
+            <ProgressBar
+                android:id="@+id/progressAudioR"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="6dp"
+                android:layout_weight="1"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#76FF03" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/textAudioDbfs"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="48kHz 16b | -inf dB"
+            android:textAlignment="viewEnd"
+            android:textColor="#76FF03"
+            android:textSize="9sp" />
+    </LinearLayout>
+
+    <!-- Manual Controls Panel -->
+    <LinearLayout
+        android:id="@+id/panelManualControls"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:background="#99000000"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/bottomBar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <!-- Shutter Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/labelShutter"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="SHUTTER: 180° (1/60s)"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekShutter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="360"
+                android:progress="180" />
+        </LinearLayout>
+
+        <!-- ISO Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/labelIso"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="ISO: 100 (LCG)"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekIso"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="3200"
+                android:progress="100" />
+        </LinearLayout>
+
+        <!-- Kelvin & Tint Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/labelKelvin"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:text="WB: 5600K / 0"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/seekKelvin"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="8000"
+                android:progress="3600" />
+
+            <SeekBar
+                android:id="@+id/seekTint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="200"
+                android:progress="100" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Bottom Controls Bar -->
+    <LinearLayout
+        android:id="@+id/bottomBar"
+        android:layout_width="0dp"
+        android:layout_height="80dp"
+        android:background="#B3000000"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <Button
+            android:id="@+id/btnModeSwitch"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:background="#333333"
+            android:text="MODE: AUTO"
+            android:textColor="#00E5FF"
+            android:textSize="12sp" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <!-- Record Button -->
+        <Button
+            android:id="@+id/btnRecord"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:background="#FF1744"
+            android:text="REC"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/textBitrateStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="HEVC 10-BIT\n140 Mbps VBR"
+            android:textAlignment="viewEnd"
+            android:textColor="#AAAAAA"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

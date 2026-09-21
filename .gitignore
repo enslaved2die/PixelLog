@@ -1,0 +1,35 @@
+# Gradle files
+.gradle/
+build/
+app/build/
+
+# Local configuration
+local.properties
+.cxx/
+app/.cxx/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Kotlin
+.kotlin/
+
+# Test binaries & temporary logs
+tests/test_native_math
+tests/reset_usb
+tests/logs/
+*.log
+
+# Captured / test media
+*.mp4

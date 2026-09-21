@@ -1,0 +1,17 @@
+{
+  "curve_name": "Pixel-Log",
+  "description": "Bespoke Log2 + linear toe transfer curve for Pixel 11 Pro",
+  "gamut": "Rec.2020",
+  "yb": 0.09,
+  "ym": 0.4,
+  "k": 5.5,
+  "xmax": 8.145870119269027,
+  "beta": 0.03215249945097427,
+  "gamma": 0.11388271108820719,
+  "delta": 0.6547358568531471,
+  "s": 5.1099611332072845,
+  "inv_gamma": 8.780964120405036,
+  "inv_s": 0.19569620471307705,
+  "grey_slope_per_stop": 0.11388271108820719,
+  "code_values_per_stop_10bit": 116.50201344323595
+}

@@ -1,0 +1,99 @@
+// ==============================================================================
+// PixelLog_Inverse.dctl
+// DaVinci Resolve DCTL: Exact Pixel-Log Inverse & Gamut Transforms
+// AUTO-GENERATED from log_params.json by tools/make_luts.py
+// ==============================================================================
+
+DEFINE_UI_PARAMS(p_Direction, Transform Direction, DCTLUI_COMBO_BOX, 1, {0, 1}, {Scene-Linear to Pixel-Log (Forward), Pixel-Log to Scene-Linear (Inverse)})
+DEFINE_UI_PARAMS(p_Exposure, Exposure Trim (Stops), DCTLUI_SLIDER_FLOAT, 0.0, -5.0, 5.0, 0.01)
+DEFINE_UI_PARAMS(p_Gamut, Output Gamut Mode, DCTLUI_COMBO_BOX, 0, {0, 1, 2, 3}, {Native BT.2020, Rec.709, ACEScg (AP1), DaVinci Wide Gamut})
+
+// --- Curve Parameters (from log_params.json) ---
+#define PL_YB        0.09000000f
+#define PL_YM        0.40000000f
+#define PL_K         5.50000000f
+#define PL_XMAX      8.14587012f
+#define PL_BETA      0.03215250f
+#define PL_GAMMA     0.11388271f
+#define PL_DELTA     0.65473586f
+#define PL_S         5.10996113f
+#define PL_INV_GAMMA 8.78096412f
+#define PL_INV_S     0.19569620f
+
+// --- Gamut Matrices ---
+__CONSTANT__ float M_BT2020_to_Rec709[9] = {
+    1.660491f, -0.587641f, -0.072850f,
+    -0.124550f, 1.132900f, -0.008349f,
+    -0.018151f, -0.100579f, 1.118730f
+};
+
+__CONSTANT__ float M_BT2020_to_ACEScg[9] = {
+    0.613097f, 0.339523f, 0.047379f,
+    0.070194f, 0.916354f, 0.013452f,
+    0.020616f, 0.109570f, 0.869814f
+};
+
+__CONSTANT__ float M_BT2020_to_DWG[9] = {
+    0.892112f, 0.024369f, 0.083519f,
+    0.032617f, 0.786138f, 0.181246f,
+    0.069977f, 0.104749f, 0.825273f
+};
+
+__DEVICE__ float fwd_pixellog(float x) {
+    if (x >= 0.0f) {
+        return PL_GAMMA * _log2f(x + PL_BETA) + PL_DELTA;
+    } else {
+        return PL_YB + PL_S * x;
+    }
+}
+
+__DEVICE__ float inv_pixellog(float y) {
+    if (y >= PL_YB) {
+        return _exp2f((y - PL_DELTA) * PL_INV_GAMMA) - PL_BETA;
+    } else {
+        return (y - PL_YB) * PL_INV_S;
+    }
+}
+
+__DEVICE__ float3 mul_m3_v3(const float m[9], float3 v) {
+    return make_float3(
+        m[0] * v.x + m[1] * v.y + m[2] * v.z,
+        m[3] * v.x + m[4] * v.y + m[5] * v.z,
+        m[6] * v.x + m[7] * v.y + m[8] * v.z
+    );
+}
+
+__DEVICE__ float3 transform(int p_Width, int p_Height, int p_X, int p_Y, float p_R, float p_G, float p_B) {
+    float3 in_rgb = make_float3(p_R, p_G, p_B);
+    float3 out_rgb;
+    float exp_scale = _exp2f(p_Exposure);
+
+    if (p_Direction == 0) {
+        // Forward: Linear -> Pixel-Log
+        in_rgb.x *= exp_scale;
+        in_rgb.y *= exp_scale;
+        in_rgb.z *= exp_scale;
+        out_rgb.x = fwd_pixellog(in_rgb.x);
+        out_rgb.y = fwd_pixellog(in_rgb.y);
+        out_rgb.z = fwd_pixellog(in_rgb.z);
+    } else {
+        // Inverse: Pixel-Log -> Scene-Linear
+        out_rgb.x = inv_pixellog(in_rgb.x);
+        out_rgb.y = inv_pixellog(in_rgb.y);
+        out_rgb.z = inv_pixellog(in_rgb.z);
+
+        out_rgb.x *= exp_scale;
+        out_rgb.y *= exp_scale;
+        out_rgb.z *= exp_scale;
+
+        // Gamut Adaptation
+        if (p_Gamut == 1) {
+            out_rgb = mul_m3_v3(M_BT2020_to_Rec709, out_rgb);
+        } else if (p_Gamut == 2) {
+            out_rgb = mul_m3_v3(M_BT2020_to_ACEScg, out_rgb);
+        } else if (p_Gamut == 3) {
+            out_rgb = mul_m3_v3(M_BT2020_to_DWG, out_rgb);
+        }
+    }
+    return out_rgb;
+}
