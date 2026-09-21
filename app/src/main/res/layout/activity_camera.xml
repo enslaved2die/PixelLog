@@ -234,6 +234,79 @@
             android:textSize="9sp" />
     </LinearLayout>
 
+    <!-- Lens Zoom Selector Bar (0.5x, 1x, 2x, 5x, 10x) -->
+    <LinearLayout
+        android:id="@+id/panelLensSelector"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:background="#B3181818"
+        android:orientation="horizontal"
+        android:padding="3dp"
+        app:layout_constraintBottom_toTopOf="@id/panelManualControls"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <Button
+            android:id="@+id/btnLens05x"
+            android:layout_width="56dp"
+            android:layout_height="40dp"
+            android:background="#333333"
+            android:text="0.5x\n12mm"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnLens1x"
+            android:layout_width="56dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:background="#00E5FF"
+            android:text="1x\n24mm"
+            android:textAllCaps="false"
+            android:textColor="#000000"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnLens2x"
+            android:layout_width="56dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:background="#333333"
+            android:text="2x\n48mm"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnLens5x"
+            android:layout_width="56dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:background="#333333"
+            android:text="5x\n120mm"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btnLens10x"
+            android:layout_width="56dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="4dp"
+            android:background="#333333"
+            android:text="10x\n240mm"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
     <!-- Manual Controls Panel -->
     <LinearLayout
         android:id="@+id/panelManualControls"

@@ -98,13 +98,18 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
             return 0;
         }
 
+        uint32_t bufW = desc.width > 0 ? desc.width : (uint32_t)width;
+        uint32_t bufH = desc.height > 0 ? desc.height : (uint32_t)height;
+        uint32_t uploadW = std::min((uint32_t)width, bufW);
+        uint32_t uploadH = std::min((uint32_t)height, bufH);
+        uint32_t rowStride = desc.stride > 0 ? desc.stride : bufW;
+
         const uint16_t* p16 = static_cast<const uint16_t*>(virtualAddress);
         static uint64_t sampleCount = 0;
         if (sampleCount++ % 60 == 0) {
-            uint32_t rowStride = desc.stride > 0 ? desc.stride : (uint32_t)width;
-            uint32_t centerIdx = rowStride * (height / 2) + (width / 2);
-            LOGI("ZeroCopyImporter: Raw Bayer values [0]=%u, [center]=%u, stride=%u, format=0x%x",
-                 p16[0], p16[centerIdx], desc.stride, desc.format);
+            uint32_t centerIdx = rowStride * (uploadH / 2) + (uploadW / 2);
+            LOGI("ZeroCopyImporter: Raw Bayer values [0]=%u, [center]=%u, stride=%u, format=0x%x, buf=%ux%u, target=%dx%d",
+                 p16[0], p16[centerIdx], desc.stride, desc.format, bufW, bufH, width, height);
         }
 
         if (mFallbackTexture == 0 || mFallbackWidth != width || mFallbackHeight != height) {
@@ -126,20 +131,20 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
         }
 
         glPixelStorei(GL_UNPACK_ALIGNMENT, 2);
-        if (desc.stride > 0 && desc.stride != (uint32_t)width) {
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, desc.stride);
+        if (rowStride > 0 && rowStride != uploadW) {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, rowStride);
+        } else {
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         }
 
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED_INTEGER, GL_UNSIGNED_SHORT, virtualAddress);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, uploadW, uploadH, GL_RED_INTEGER, GL_UNSIGNED_SHORT, virtualAddress);
 
         GLenum err = glGetError();
         if (err != GL_NO_ERROR) {
             LOGE("ZeroCopyImporter: glTexSubImage2D failed with GL error: 0x%x", err);
         }
 
-        if (desc.stride > 0 && desc.stride != (uint32_t)width) {
-            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-        }
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 
         AHardwareBuffer_unlock(hardwareBuffer, nullptr);

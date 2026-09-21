@@ -35,29 +35,31 @@ static const char* DEBAYER_FRAGMENT_SHADER_SOURCE = R"glsl(#version 310 es
 precision highp float;
 precision highp int;
 precision highp usampler2D;
+precision highp sampler2D;
 
 in vec2 vTexCoord;
 layout(location = 0) out vec4 outLogColor;
 
 // Raw Sensor Uniforms
-uniform usampler2D uRawBayerTexture;
-uniform ivec2 uSensorResolution;
-uniform int uBayerPattern;
-uniform vec4 uBlackLevel;
-uniform float uWhiteLevel;
+uniform usampler2D uRawBayerTexture; // Raw 16-bit integer texture (GL_R16UI)
+uniform sampler2D  uLensShadingMap;   // Bilinear 2D Lens Shading Map (GL_RGBA16F)
+uniform ivec2 uSensorResolution;    // Sensor resolution e.g. (4080, 3064)
+uniform int uBayerPattern;          // 0: RGGB, 1: GRBG, 2: GBRG, 3: BGGR
+uniform vec4 uBlackLevel;           // Dynamic black level [R, Gr, Gb, B] (~256.0)
+uniform float uWhiteLevel;          // ADC white level (~4095.0)
+uniform int uHasLensShading;        // 1 if lens shading map is available, 0 otherwise
 
-// Color Science Uniforms
-uniform vec3 uColorGains;
-uniform mat3 uColorMatrix;
-uniform float uExposureGain;
-uniform int uLogCurveType;
+// Color Science Uniforms (Phase 2 & Phase 3)
+uniform vec3 uNeutralColorPoint;    // SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+uniform mat3 uCompositeMatrix;      // Sensor -> Bradford -> Rec.2020 Exposed (column-major)
+uniform int uLogCurveType;          // 0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log
 
-// --- Analytical Curve Constants ---
-// Pixel-Log (asinh)
-const float PL_ALPHA = 0.09499002;
-const float PL_BETA  = -0.21565232;
-const float PL_INV_S = 222.22222222;
-const float PL_R0    = -0.02100000;
+// Pixel-Log Analytical Curve Parameters (populated from log_params.json)
+uniform float uLogYb;
+uniform float uLogBeta;
+uniform float uLogGamma;
+uniform float uLogDelta;
+uniform float uLogS;
 
 // Sony S-Log3
 const float SL3_CUTOFF    = 0.01125000;
@@ -68,7 +70,7 @@ const float SL3_TOE_SCALE = 6.62194376;
 const float SL3_TOE_OFF   = 95.0 / 1023.0;
 const float LOG10_INV_E   = 0.4342944819;
 
-// Apple Log (Official White Paper Specification)
+// Apple Log
 const float AL_GAMMA = 0.08550479;
 const float AL_BETA  = 0.00964052;
 const float AL_DELTA = 0.69336945;
@@ -89,30 +91,30 @@ int getCfaChannel(ivec2 p, int pattern) {
     }
 }
 
+// Fetch raw sample with per-channel black level subtraction.
+// DO NOT clamp negatives to 0.0 (Phase 2.1) so dark noise is preserved.
 float fetchLinearSample(ivec2 p, int pattern) {
     p = clamp(p, ivec2(0), uSensorResolution - ivec2(1));
     uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
     float raw = float(rawInt);
 
-    if (uWhiteLevel > 1.0 && raw <= 1.0) {
-        raw *= 65535.0;
-    }
-
     int cfa = getCfaChannel(p, pattern);
     float bl = uBlackLevel[cfa];
     float wl = uWhiteLevel;
 
-    return clamp((raw - bl) / max(wl - bl, 1e-6), 0.0, 1.0);
+    return (raw - bl) / max(wl - bl, 1e-6);
 }
 
-// 1. Branchless Pixel-Log OETF (asinh)
-vec3 applyPixelLogOETF(vec3 R) {
-    vec3 x = (R - vec3(PL_R0)) * PL_INV_S;
-    vec3 r = x + sqrt(x * x + vec3(1.0));
-    return vec3(PL_ALPHA) * log2(r) + vec3(PL_BETA);
+// Phase 3: Branchless C1 Log2 + Linear Toe Transfer Function
+vec3 applyPixelLogOETF(vec3 x) {
+    vec3 logArg = max(x + vec3(uLogBeta), vec3(1e-8));
+    vec3 logVal = vec3(uLogGamma) * (log(logArg) * 1.4426950408889634) + vec3(uLogDelta);
+    vec3 toeVal = vec3(uLogYb) + vec3(uLogS) * x;
+    vec3 isNonNeg = step(vec3(0.0), x);
+    return mix(toeVal, logVal, isNonNeg);
 }
 
-// 2. Sony S-Log3 OETF
+// Sony S-Log3 OETF
 float sLog3Single(float x) {
     if (x >= SL3_CUTOFF) {
         float log10Val = log((x + 0.01) * SL3_INV_019) * LOG10_INV_E;
@@ -122,10 +124,10 @@ float sLog3Single(float x) {
     }
 }
 vec3 applySLog3OETF(vec3 R) {
-    return vec3(sLog3Single(R.r), sLog3Single(R.g), sLog3Single(R.b));
+    return vec3(sLog3Single(max(R.r, 0.0)), sLog3Single(max(R.g, 0.0)), sLog3Single(max(R.b, 0.0)));
 }
 
-// 3. Apple Log OETF
+// Apple Log OETF
 float appleLogSingle(float R) {
     if (R >= AL_RT) {
         return AL_GAMMA * log2(R + AL_BETA) + AL_DELTA;
@@ -179,23 +181,33 @@ void main() {
         debayeredRgb.r = 0.5 * (cN + cS);
     }
 
-    // Step A: White balance gains in linear space
-    vec3 wbRgb = debayeredRgb * uColorGains;
+    // Step 2: Lens Shading Map (Phase 2.2: Apply before white balance)
+    if (uHasLensShading == 1) {
+        vec2 normUv = vec2(p) / vec2(uSensorResolution);
+        vec4 lsGains = texture(uLensShadingMap, normUv); // [R, Gr, Gb, B]
+        debayeredRgb.r *= lsGains.r;
+        debayeredRgb.g *= 0.5 * (lsGains.g + lsGains.b);
+        debayeredRgb.b *= lsGains.a;
+    }
 
-    // Step B: Multiply by column-major color matrix (Sensor RGB -> BT.2020 / S-Gamut3.Cine)
-    vec3 linearWorking = uColorMatrix * wbRgb;
+    // Step 3: White Balance using SENSOR_NEUTRAL_COLOR_POINT & Highlight Clamp (Phase 2.3)
+    vec3 neutral = max(uNeutralColorPoint, vec3(1e-4));
+    vec3 wbRgb = debayeredRgb / neutral;
 
-    // Step C: Multiply by exposure gain (maps 18% grey to 0.1800)
-    vec3 linearExposed = max(linearWorking * uExposureGain, vec3(0.0));
+    // Highlight Clamp: Ensure clipped highlights remain neutral (1.0) instead of magenta
+    wbRgb = min(wbRgb, vec3(1.0));
 
-    // Step D: Apply selected Log OETF (0: Pixel-Log asinh, 1: Sony S-Log3, 2: Apple Log)
+    // Step 4-7: Sensor RGB -> Linear Working Gamut (BT.2020) via Composite Matrix
+    vec3 linearWorking = uCompositeMatrix * wbRgb;
+
+    // Step 8: Apply Selected Log OETF
     vec3 logOutput;
     if (uLogCurveType == 1) {
-        logOutput = applySLog3OETF(linearExposed);
+        logOutput = applySLog3OETF(linearWorking);
     } else if (uLogCurveType == 2) {
-        logOutput = applyAppleLogOETF(linearExposed);
+        logOutput = applyAppleLogOETF(linearWorking);
     } else {
-        logOutput = applyPixelLogOETF(linearExposed);
+        logOutput = applyPixelLogOETF(linearWorking);
     }
 
     outLogColor = vec4(clamp(logOutput, 0.0, 1.0), 1.0);
@@ -256,6 +268,9 @@ GpuPipeline::GpuPipeline()
       mPendingLutClear(false),
       mOffscreenFbo(0),
       mOffscreenTexture(0),
+      mLensShadingTexture(0),
+      mLensShadingWidth(0),
+      mLensShadingHeight(0),
       mDebayerProgram(0),
       mLutProgram(0),
       mPassthroughProgram(0),
@@ -672,26 +687,48 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
                metadata.dynamicBlackLevel.b);
     glUniform1f(glGetUniformLocation(mDebayerProgram, "uWhiteLevel"), metadata.whiteLevel);
 
-    // Color Science Uniforms
-    // 1. White Balance Gains (averaging the two green channels)
-    float gR = metadata.colorCorrectionGains[0];
-    float gG = (metadata.colorCorrectionGains[1] + metadata.colorCorrectionGains[2]) * 0.5f;
-    float gB = metadata.colorCorrectionGains[3];
-    if (gR <= 0.0f) gR = 1.0f;
-    if (gG <= 0.0f) gG = 1.0f;
-    if (gB <= 0.0f) gB = 1.0f;
-    glUniform3f(glGetUniformLocation(mDebayerProgram, "uColorGains"), gR, gG, gB);
+    // Color Science Uniforms (Phase 2 & Phase 3)
+    // 1. Lens Shading Map (Phase 2.2)
+    if (metadata.hasShadingMap && metadata.shadingMapWidth > 0 && metadata.shadingMapHeight > 0 && !metadata.shadingMapData.empty()) {
+        glActiveTexture(GL_TEXTURE1);
+        if (mLensShadingTexture == 0 || mLensShadingWidth != metadata.shadingMapWidth || mLensShadingHeight != metadata.shadingMapHeight) {
+            if (mLensShadingTexture != 0) glDeleteTextures(1, &mLensShadingTexture);
+            glGenTextures(1, &mLensShadingTexture);
+            glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shadingMapWidth, metadata.shadingMapHeight, 0, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+            mLensShadingWidth = metadata.shadingMapWidth;
+            mLensShadingHeight = metadata.shadingMapHeight;
+        } else {
+            glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, metadata.shadingMapWidth, metadata.shadingMapHeight, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+        }
+        glUniform1i(glGetUniformLocation(mDebayerProgram, "uLensShadingMap"), 1);
+        glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 1);
+        glActiveTexture(GL_TEXTURE0);
+    } else {
+        glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 0);
+    }
 
-    // 2. Column-Major Sensor-to-Gamut Color Matrix
-    glUniformMatrix3fv(glGetUniformLocation(mDebayerProgram, "uColorMatrix"), 1, GL_FALSE, metadata.colorTransformMatrix);
+    // 2. White Balance: SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+    float nR = metadata.neutralColorPoint[0] > 0.0f ? metadata.neutralColorPoint[0] : 0.55f;
+    float nG = metadata.neutralColorPoint[1] > 0.0f ? metadata.neutralColorPoint[1] : 1.0f;
+    float nB = metadata.neutralColorPoint[2] > 0.0f ? metadata.neutralColorPoint[2] : 0.70f;
+    glUniform3f(glGetUniformLocation(mDebayerProgram, "uNeutralColorPoint"), nR, nG, nB);
 
-    // 3. Exposure Normalizer (Maps 18% Grey to 0.1800 with ~6 stops highlight headroom)
-    float expGain = mExposureGain.load();
-    if (expGain <= 0.0f) expGain = 11.5200f;
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uExposureGain"), expGain);
+    // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear + Exposure Gain)
+    glUniformMatrix3fv(glGetUniformLocation(mDebayerProgram, "uCompositeMatrix"), 1, GL_FALSE, metadata.compositeMatrix);
 
-    // 4. Selectable Log OETF: 0 = Pixel-Log, 1 = Sony S-Log3, 2 = Apple Log
+    // 4. Selectable Log OETF & Analytical Curve Parameters
     glUniform1i(glGetUniformLocation(mDebayerProgram, "uLogCurveType"), mLogCurveType.load());
+    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogYb"), pixellog::LOG_YB);
+    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogBeta"), pixellog::LOG_BETA);
+    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogGamma"), pixellog::LOG_GAMMA);
+    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogDelta"), pixellog::LOG_DELTA);
+    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogS"), pixellog::LOG_S);
 
     // Draw fullscreen quad
     glBindBuffer(GL_ARRAY_BUFFER, mQuadVbo);
@@ -701,6 +738,10 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // Cleanup raw input texture
     mImporter.destroyTexture(rawTexture);
@@ -794,6 +835,11 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
         glBindBuffer(GL_ARRAY_BUFFER, 0);
 
         eglSwapBuffers(mEglDisplay, mEglDisplaySurface);
+    } else {
+        static uint64_t noSurfaceLog = 0;
+        if (noSurfaceLog++ % 60 == 0) {
+            LOGW("GpuPipeline: Pass 3 display pass skipped - mEglDisplaySurface is EGL_NO_SURFACE");
+        }
     }
 
     // Restore Pbuffer surface for intermediate FBO / sync operations
@@ -843,6 +889,10 @@ void GpuPipeline::release() {
     if (mDisplayQuadVbo != 0) {
         glDeleteBuffers(1, &mDisplayQuadVbo);
         mDisplayQuadVbo = 0;
+    }
+    if (mLensShadingTexture != 0) {
+        glDeleteTextures(1, &mLensShadingTexture);
+        mLensShadingTexture = 0;
     }
 
     mLutManager.release();

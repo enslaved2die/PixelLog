@@ -1,5 +1,6 @@
 #include "CameraStreamManager.h"
 #include <unistd.h>
+#include <cstdlib>
 
 CameraStreamManager::CameraStreamManager()
     : mWidth(DEFAULT_OPEN_GATE_WIDTH),
@@ -7,14 +8,19 @@ CameraStreamManager::CameraStreamManager()
       mBayerPattern(BayerPattern::RGGB),
       mRunning(false),
       mImageReader(nullptr),
-      mNativeWindow(nullptr) {
-    memset(&mCurrentMetadata, 0, sizeof(mCurrentMetadata));
+      mNativeWindow(nullptr),
+      mMatchedFrames(0),
+      mUnmatchedFrames(0),
+      mDroppedFrames(0) {
+    mCurrentMetadata.timestampNs = 0;
     mCurrentMetadata.whiteLevel = 4095.0f;
     mCurrentMetadata.dynamicBlackLevel = { 256.0f, 256.0f, 256.0f, 256.0f };
-    // Identity matrix default
-    mCurrentMetadata.colorTransformMatrix[0] = 1.0f;
-    mCurrentMetadata.colorTransformMatrix[4] = 1.0f;
-    mCurrentMetadata.colorTransformMatrix[8] = 1.0f;
+    mCurrentMetadata.neutralColorPoint[0] = 0.55f;
+    mCurrentMetadata.neutralColorPoint[1] = 1.0f;
+    mCurrentMetadata.neutralColorPoint[2] = 0.70f;
+    mCurrentMetadata.exposureGain = 8.14587f;
+    mCurrentMetadata.hasShadingMap = false;
+    for (int i = 0; i < 9; ++i) mCurrentMetadata.compositeMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
 }
 
 CameraStreamManager::~CameraStreamManager() {
@@ -97,16 +103,41 @@ void CameraStreamManager::onImageAvailable(AImageReader* reader) {
         return;
     }
 
+    int64_t timestamp = 0;
+    AImage_getTimestamp(image, &timestamp);
+
     SensorFrameMetadata metaCopy;
     {
         std::lock_guard<std::mutex> lock(mMetadataMutex);
-        metaCopy = mCurrentMetadata;
+        auto it = mPendingMetadata.find(timestamp);
+        if (it != mPendingMetadata.end()) {
+            metaCopy = it->second;
+            mPendingMetadata.erase(it);
+            mMatchedFrames++;
+        } else {
+            // Find closest metadata within 35ms (1 frame duration)
+            auto bestIt = mPendingMetadata.end();
+            int64_t bestDiff = 35000000LL;
+            for (auto searchIt = mPendingMetadata.begin(); searchIt != mPendingMetadata.end(); ++searchIt) {
+                int64_t diff = std::abs(searchIt->first - timestamp);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestIt = searchIt;
+                }
+            }
+            if (bestIt != mPendingMetadata.end()) {
+                metaCopy = bestIt->second;
+                mPendingMetadata.erase(bestIt);
+                mMatchedFrames++;
+            } else {
+                metaCopy = mCurrentMetadata;
+                mUnmatchedFrames++;
+            }
+        }
+        metaCopy.timestampNs = timestamp;
+        metaCopy.bayerPattern = mBayerPattern;
+        mCurrentMetadata = metaCopy;
     }
-
-    int64_t timestamp = 0;
-    AImage_getTimestamp(image, &timestamp);
-    metaCopy.timestampNs = timestamp;
-    metaCopy.bayerPattern = mBayerPattern;
 
     {
         std::lock_guard<std::mutex> lock(mQueueMutex);
@@ -114,9 +145,10 @@ void CameraStreamManager::onImageAvailable(AImageReader* reader) {
         if (mFrameQueue.size() >= 2) {
             FrameItem dropped = mFrameQueue.front();
             mFrameQueue.pop();
+            mDroppedFrames++;
             if (dropped.acquireFenceFd >= 0) close(dropped.acquireFenceFd);
             AImage_delete(dropped.image);
-            LOGW("CameraStreamManager: Dropped late frame to prevent pipeline latency buildup");
+            LOGW("CameraStreamManager: Dropped late frame (total dropped: %llu)", (unsigned long long)mDroppedFrames);
         }
         mFrameQueue.push({ image, acquireFenceFd, metaCopy });
     }
@@ -153,7 +185,11 @@ void CameraStreamManager::processingLoop() {
 
             frameCount++;
             if (frameCount % 60 == 0) {
-                LOGI("CameraStreamManager: Processed %llu frames through GPU debayer & display pipeline", (unsigned long long)frameCount);
+                LOGI("CameraStreamManager: Processed %llu frames (Sync stats: %llu matched, %llu unmatched, %llu dropped)",
+                     (unsigned long long)frameCount,
+                     (unsigned long long)mMatchedFrames,
+                     (unsigned long long)mUnmatchedFrames,
+                     (unsigned long long)mDroppedFrames);
             }
 
             // Asynchronous release returning buffer to Camera2 circular pool
@@ -199,6 +235,12 @@ void CameraStreamManager::setExposureGain(float gain) {
 void CameraStreamManager::updateFrameMetadata(const SensorFrameMetadata& metadata) {
     std::lock_guard<std::mutex> lock(mMetadataMutex);
     mCurrentMetadata = metadata;
+    if (metadata.timestampNs > 0) {
+        mPendingMetadata[metadata.timestampNs] = metadata;
+        while (mPendingMetadata.size() > 45) {
+            mPendingMetadata.erase(mPendingMetadata.begin());
+        }
+    }
 }
 
 void CameraStreamManager::release() {

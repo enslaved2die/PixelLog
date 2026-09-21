@@ -22,9 +22,16 @@ class PixelLogEngine {
     private var pendingLogCurveType: Int = 0
     private var pendingExposureGain: Float = 1.0f
 
+    private fun releaseNativeHandle() {
+        if (nativeHandle != 0L) {
+            nativeDestroy(nativeHandle)
+            nativeHandle = 0L
+        }
+    }
+
     fun initialize(width: Int, height: Int, bayerPattern: Int): Boolean {
         if (nativeHandle != 0L) {
-            destroy()
+            releaseNativeHandle()
         }
         nativeHandle = nativeCreate(width, height, bayerPattern)
         if (nativeHandle != 0L) {
@@ -46,10 +53,7 @@ class PixelLogEngine {
     }
 
     fun destroy() {
-        if (nativeHandle != 0L) {
-            nativeDestroy(nativeHandle)
-            nativeHandle = 0L
-        }
+        releaseNativeHandle()
         pendingDisplaySurface = null
         pendingEncoderSurface = null
         pendingLutBytes = null
@@ -101,6 +105,33 @@ class PixelLogEngine {
         }
     }
 
+    fun updateFrameMetadata(
+        timestampNs: Long,
+        blackLevel: FloatArray,
+        whiteLevel: Float,
+        neutralColorPoint: FloatArray,
+        compositeMatrix: FloatArray,
+        exposureGain: Float,
+        shadingMap: FloatArray?,
+        shadingWidth: Int,
+        shadingHeight: Int
+    ) {
+        if (nativeHandle != 0L) {
+            nativeUpdateFrameMetadata(
+                nativeHandle,
+                timestampNs,
+                blackLevel,
+                whiteLevel,
+                neutralColorPoint,
+                compositeMatrix,
+                exposureGain,
+                shadingMap,
+                shadingWidth,
+                shadingHeight
+            )
+        }
+    }
+
     fun updateMetadata(
         blackLevel: FloatArray,
         whiteLevel: Float,
@@ -122,6 +153,18 @@ class PixelLogEngine {
     private external fun nativeSetLutEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetLogCurveType(handle: Long, curveType: Int)
     private external fun nativeSetExposureGain(handle: Long, gain: Float)
+    private external fun nativeUpdateFrameMetadata(
+        handle: Long,
+        timestampNs: Long,
+        blackLevel: FloatArray,
+        whiteLevel: Float,
+        neutralPoint: FloatArray,
+        compositeMatrix: FloatArray,
+        exposureGain: Float,
+        shadingMap: FloatArray?,
+        shadingWidth: Int,
+        shadingHeight: Int
+    )
     private external fun nativeUpdateMetadata(
         handle: Long,
         blackLevel: FloatArray,

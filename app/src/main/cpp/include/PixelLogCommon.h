@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LogParams.h"
 #include <android/log.h>
 #include <android/hardware_buffer.h>
 #include <EGL/egl.h>
@@ -51,7 +52,12 @@ struct SensorFrameMetadata {
     int64_t timestampNs;
     DynamicBlackLevel dynamicBlackLevel;
     float whiteLevel;
-    float colorCorrectionGains[4]; // R, Gr, Gb, B
-    float colorTransformMatrix[9]; // 3x3 Bradford adapted matrix
+    float neutralColorPoint[3];    // [Rn, Gn, Bn] (SENSOR_NEUTRAL_COLOR_POINT)
+    float compositeMatrix[9];      // 3x3 column-major Sensor -> Rec.2020 exposed
+    float exposureGain;            // Exposure normalizer factor
     BayerPattern bayerPattern;
+    int32_t shadingMapWidth;
+    int32_t shadingMapHeight;
+    std::vector<float> shadingMapData; // [R, Gr, Gb, B] per grid cell
+    bool hasShadingMap;
 };

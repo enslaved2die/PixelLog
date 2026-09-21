@@ -7,6 +7,7 @@
 #include <atomic>
 #include <thread>
 #include <queue>
+#include <map>
 #include <mutex>
 #include <condition_variable>
 
@@ -45,6 +46,10 @@ private:
 
     std::mutex mMetadataMutex;
     SensorFrameMetadata mCurrentMetadata;
+    std::map<int64_t, SensorFrameMetadata> mPendingMetadata;
+    uint64_t mMatchedFrames;
+    uint64_t mUnmatchedFrames;
+    uint64_t mDroppedFrames;
 
     // Worker thread for asynchronous image processing
     std::thread mProcessingThread;

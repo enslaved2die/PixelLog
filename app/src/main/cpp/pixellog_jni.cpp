@@ -91,6 +91,72 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeLoadDisplayLut(
 }
 
 JNIEXPORT void JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateFrameMetadata(
+    JNIEnv* env,
+    jobject /* this */,
+    jlong handle,
+    jlong timestampNs,
+    jfloatArray blackLevelArr,
+    jfloat whiteLevel,
+    jfloatArray neutralPointArr,
+    jfloatArray compositeMatrixArr,
+    jfloat exposureGain,
+    jfloatArray shadingMapArr,
+    jint shadingWidth,
+    jint shadingHeight) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return;
+
+    SensorFrameMetadata meta;
+    meta.timestampNs = timestampNs;
+    meta.whiteLevel = whiteLevel;
+    meta.exposureGain = exposureGain > 0.0f ? exposureGain : 8.14587f;
+    meta.hasShadingMap = false;
+
+    if (blackLevelArr) {
+        jfloat* bl = env->GetFloatArrayElements(blackLevelArr, nullptr);
+        meta.dynamicBlackLevel = { bl[0], bl[1], bl[2], bl[3] };
+        env->ReleaseFloatArrayElements(blackLevelArr, bl, JNI_ABORT);
+    } else {
+        meta.dynamicBlackLevel = { 256.0f, 256.0f, 256.0f, 256.0f };
+    }
+
+    if (neutralPointArr) {
+        jfloat* np = env->GetFloatArrayElements(neutralPointArr, nullptr);
+        meta.neutralColorPoint[0] = np[0];
+        meta.neutralColorPoint[1] = np[1];
+        meta.neutralColorPoint[2] = np[2];
+        env->ReleaseFloatArrayElements(neutralPointArr, np, JNI_ABORT);
+    } else {
+        meta.neutralColorPoint[0] = 0.55f;
+        meta.neutralColorPoint[1] = 1.0f;
+        meta.neutralColorPoint[2] = 0.70f;
+    }
+
+    if (compositeMatrixArr) {
+        jfloat* cm = env->GetFloatArrayElements(compositeMatrixArr, nullptr);
+        for (int i = 0; i < 9; ++i) meta.compositeMatrix[i] = cm[i];
+        env->ReleaseFloatArrayElements(compositeMatrixArr, cm, JNI_ABORT);
+    } else {
+        for (int i = 0; i < 9; ++i) meta.compositeMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
+    }
+
+    if (shadingMapArr && shadingWidth > 0 && shadingHeight > 0) {
+        jsize len = env->GetArrayLength(shadingMapArr);
+        if (len >= shadingWidth * shadingHeight * 4) {
+            jfloat* sm = env->GetFloatArrayElements(shadingMapArr, nullptr);
+            meta.shadingMapWidth = shadingWidth;
+            meta.shadingMapHeight = shadingHeight;
+            meta.shadingMapData.assign(sm, sm + len);
+            meta.hasShadingMap = true;
+            env->ReleaseFloatArrayElements(shadingMapArr, sm, JNI_ABORT);
+        }
+    }
+
+    manager->updateFrameMetadata(meta);
+}
+
+JNIEXPORT void JNICALL
 Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateMetadata(
     JNIEnv* env,
     jobject /* this */,
@@ -103,8 +169,10 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateMetadata(
     if (!manager) return;
 
     SensorFrameMetadata meta;
-    memset(&meta, 0, sizeof(meta));
+    meta.timestampNs = 0;
     meta.whiteLevel = whiteLevel;
+    meta.exposureGain = 8.14587f;
+    meta.hasShadingMap = false;
 
     if (blackLevelArr) {
         jfloat* bl = env->GetFloatArrayElements(blackLevelArr, nullptr);
@@ -116,21 +184,22 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateMetadata(
 
     if (gainsArr) {
         jfloat* g = env->GetFloatArrayElements(gainsArr, nullptr);
-        meta.colorCorrectionGains[0] = g[0];
-        meta.colorCorrectionGains[1] = g[1];
-        meta.colorCorrectionGains[2] = g[2];
-        meta.colorCorrectionGains[3] = g[3];
+        meta.neutralColorPoint[0] = 1.0f / (g[0] > 0.0f ? g[0] : 1.0f);
+        meta.neutralColorPoint[1] = 1.0f;
+        meta.neutralColorPoint[2] = 1.0f / (g[3] > 0.0f ? g[3] : 1.0f);
         env->ReleaseFloatArrayElements(gainsArr, g, JNI_ABORT);
+    } else {
+        meta.neutralColorPoint[0] = 0.55f;
+        meta.neutralColorPoint[1] = 1.0f;
+        meta.neutralColorPoint[2] = 0.70f;
     }
 
     if (colorMatrixArr) {
         jfloat* cm = env->GetFloatArrayElements(colorMatrixArr, nullptr);
-        for (int i = 0; i < 9; ++i) meta.colorTransformMatrix[i] = cm[i];
+        for (int i = 0; i < 9; ++i) meta.compositeMatrix[i] = cm[i];
         env->ReleaseFloatArrayElements(colorMatrixArr, cm, JNI_ABORT);
     } else {
-        meta.colorTransformMatrix[0] = 1.0f;
-        meta.colorTransformMatrix[4] = 1.0f;
-        meta.colorTransformMatrix[8] = 1.0f;
+        for (int i = 0; i < 9; ++i) meta.compositeMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
     }
 
     manager->updateFrameMetadata(meta);

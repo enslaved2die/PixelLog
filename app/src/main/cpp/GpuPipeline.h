@@ -74,6 +74,11 @@ private:
     GLuint mOffscreenFbo;
     GLuint mOffscreenTexture;
 
+    // Lens Shading Map Texture (Bilinear RGBA16F)
+    GLuint mLensShadingTexture;
+    int32_t mLensShadingWidth;
+    int32_t mLensShadingHeight;
+
     // Shader programs
     GLuint mDebayerProgram;
     GLuint mLutProgram;

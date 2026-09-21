@@ -2,111 +2,107 @@
 precision highp float;
 precision highp int;
 precision highp usampler2D;
+precision highp sampler2D;
 
 in vec2 vTexCoord;
 layout(location = 0) out vec4 outLogColor;
 
-// Uniforms
+// Raw Sensor Uniforms
 uniform usampler2D uRawBayerTexture; // Raw 16-bit integer texture (GL_R16UI)
-uniform ivec2 uSensorResolution;    // e.g. ivec2(4080, 3064)
+uniform sampler2D  uLensShadingMap;   // Bilinear 2D Lens Shading Map (GL_RGBA16F or GL_RGBA32F)
+uniform ivec2 uSensorResolution;    // Sensor resolution e.g. (4080, 3064)
 uniform int uBayerPattern;          // 0: RGGB, 1: GRBG, 2: GBRG, 3: BGGR
-uniform vec4 uBlackLevel;           // [BL_R, BL_Gr, BL_Gb, BL_B] ADC black level (~256.0)
+uniform vec4 uBlackLevel;           // Dynamic black level [R, Gr, Gb, B] (~256.0)
 uniform float uWhiteLevel;          // ADC white level (~4095.0)
-uniform mat3 uColorMatrix;          // Sensor-to-Linear-BT.2020 matrix (column-major)
-uniform vec3 uColorGains;            // White balance channel gains
-uniform float uExposureGain;         // Exposure normalization factor (maps 18% grey to 0.1800)
-uniform int uLogCurveType;           // 0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log
+uniform int uHasLensShading;        // 1 if lens shading map is available, 0 otherwise
 
-// Pixel-Log Analytical Constants
-const float PIXEL_LOG_ALPHA = 0.09499002;
-const float PIXEL_LOG_BETA  = -0.21565232;
-const float PIXEL_LOG_INV_S = 222.22222222; // 1.0 / 0.00450000
-const float PIXEL_LOG_R0    = -0.02100000;
+// Color Science Uniforms (Phase 2 & Phase 3)
+uniform vec3 uNeutralColorPoint;    // SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+uniform mat3 uCompositeMatrix;      // Sensor -> Bradford -> Rec.2020 Exposed (column-major)
+uniform int uLogCurveType;          // 0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log
+
+// Pixel-Log Analytical Curve Parameters (populated from log_params.json)
+uniform float uLogYb;
+uniform float uLogBeta;
+uniform float uLogGamma;
+uniform float uLogDelta;
+uniform float uLogS;
 
 // Returns CFA Channel Index: 0: R, 1: Gr, 2: Gb, 3: B
 int getCfaChannel(ivec2 p, int pattern) {
     int px = p.x & 1;
     int py = p.y & 1;
-    int idx = py * 2 + px; // 0:(0,0), 1:(1,0), 2:(0,1), 3:(1,1)
+    int idx = (py << 1) | px; // 0:(0,0), 1:(1,0), 2:(0,1), 3:(1,1)
 
-    // Lookup for Bayer pattern ordering matching CameraCharacteristics
-    // 0: RGGB -> [(0,0)=R,  (1,0)=Gr, (0,1)=Gb, (1,1)=B ]
-    // 1: GRBG -> [(0,0)=Gr, (1,0)=R,  (0,1)=B,  (1,1)=Gb]
-    // 2: GBRG -> [(0,0)=Gb, (1,0)=B,  (0,1)=R,  (1,1)=Gr]
-    // 3: BGGR -> [(0,0)=B,  (1,0)=Gb, (0,1)=Gr, (1,1)=R ]
     if (pattern == 0) {
-        return (idx == 0) ? 0 : (idx == 1) ? 1 : (idx == 2) ? 2 : 3;
+        return (idx == 0) ? 0 : (idx == 1) ? 1 : (idx == 2) ? 2 : 3; // RGGB
     } else if (pattern == 1) {
-        return (idx == 0) ? 1 : (idx == 1) ? 0 : (idx == 2) ? 3 : 2;
+        return (idx == 0) ? 1 : (idx == 1) ? 0 : (idx == 2) ? 3 : 2; // GRBG
     } else if (pattern == 2) {
-        return (idx == 0) ? 2 : (idx == 1) ? 3 : (idx == 2) ? 0 : 1;
+        return (idx == 0) ? 2 : (idx == 1) ? 3 : (idx == 2) ? 0 : 1; // GBRG
     } else {
-        return (idx == 0) ? 3 : (idx == 1) ? 2 : (idx == 2) ? 1 : 0;
+        return (idx == 0) ? 3 : (idx == 1) ? 2 : (idx == 2) ? 1 : 0; // BGGR
     }
 }
 
-// Fetch raw sample with hardware clamp and dynamic black level subtraction
+// Fetch raw sample with per-channel black level subtraction.
+// DO NOT clamp negatives to 0.0 (Phase 2.1) so dark noise is preserved.
 float fetchLinearSample(ivec2 p, int pattern) {
     p = clamp(p, ivec2(0), uSensorResolution - ivec2(1));
     uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
     float raw = float(rawInt);
+
     int cfa = getCfaChannel(p, pattern);
     float bl = uBlackLevel[cfa];
     float wl = uWhiteLevel;
 
-    return clamp((raw - bl) / max(wl - bl, 1e-6), 0.0, 1.0);
+    // Linear un-clamped normalization
+    return (raw - bl) / max(wl - bl, 1e-6);
 }
 
-// Branchless Pixel-Log OETF: Evaluates in 4 FLOPs + 1 SQRT + 1 LOG2 per channel
-vec3 applyPixelLogOETF(vec3 linearRgb) {
-    vec3 x = (linearRgb - vec3(PIXEL_LOG_R0)) * PIXEL_LOG_INV_S;
-    vec3 r = x + sqrt(x * x + vec3(1.0));
-    return vec3(PIXEL_LOG_ALPHA) * log2(r) + vec3(PIXEL_LOG_BETA);
+// Phase 3: Branchless C1 Log2 + Linear Toe Transfer Function
+// x >= 0: y = gamma * log2(x + beta) + delta
+// x < 0:  y = yb + s * x
+vec3 applyPixelLogOETF(vec3 x) {
+    vec3 logArg = max(x + vec3(uLogBeta), vec3(1e-8));
+    vec3 logVal = vec3(uLogGamma) * (log(logArg) * 1.4426950408889634) + vec3(uLogDelta);
+    vec3 toeVal = vec3(uLogYb) + vec3(uLogS) * x;
+    vec3 isNonNeg = step(vec3(0.0), x);
+    return mix(toeVal, logVal, isNonNeg);
 }
 
-// Sony S-Log3 OETF
-vec3 applySLog3OETF(vec3 linearRgb) {
-    vec3 outLog;
-    for (int i = 0; i < 3; ++i) {
-        float x = max(linearRgb[i], 0.0);
-        if (x >= 0.01125) {
-            outLog[i] = (420.0 + (log2((x + 0.01) / 0.19) / 3.32192809) * 261.5) / 1023.0;
-        } else {
-            outLog[i] = (x * (171.2102946929 - 95.0) / 0.01125 + 95.0) / 1023.0;
-        }
-    }
-    return outLog;
-}
-
-// Apple Log OETF
-vec3 applyAppleLogOETF(vec3 linearRgb) {
-    vec3 outLog;
-    for (int i = 0; i < 3; ++i) {
-        float x = max(linearRgb[i], 0.0);
-        if (x >= 0.01) {
-            outLog[i] = 0.185638 * log(5.367655 * x + 0.092809) + 0.677208;
-        } else {
-            outLog[i] = 17.536006 * x + 0.042857;
-        }
-    }
-    return outLog;
-}
-
-vec3 applyLogOETF(vec3 linearRgb, int curveType) {
-    if (curveType == 1) {
-        return applySLog3OETF(linearRgb);
-    } else if (curveType == 2) {
-        return applyAppleLogOETF(linearRgb);
+// Sony S-Log3 OETF (Fallback)
+float sLog3Single(float x) {
+    if (x >= 0.01125) {
+        return (420.0 + (log2((x + 0.01) / 0.19) / 3.32192809) * 261.5) / 1023.0;
     } else {
-        return applyPixelLogOETF(linearRgb);
+        return (x * (171.2102946929 - 95.0) / 0.01125 + 95.0) / 1023.0;
     }
+}
+vec3 applySLog3OETF(vec3 R) {
+    return vec3(sLog3Single(max(R.r, 0.0)), sLog3Single(max(R.g, 0.0)), sLog3Single(max(R.b, 0.0)));
+}
+
+// Apple Log OETF (Fallback)
+float appleLogSingle(float R) {
+    if (R >= 0.01) {
+        return 0.185638 * log(5.367655 * R + 0.092809) + 0.677208;
+    } else if (R >= -0.05641088) {
+        float diff = R - (-0.05641088);
+        return 47.28711236 * diff * diff;
+    } else {
+        return 0.0;
+    }
+}
+vec3 applyAppleLogOETF(vec3 R) {
+    return vec3(appleLogSingle(R.r), appleLogSingle(R.g), appleLogSingle(R.b));
 }
 
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
     int centerCfa = getCfaChannel(p, uBayerPattern);
 
-    // 3x3 Texture Neighborhood Fetch (Zero-overhead L1 cache hits, <=24 registers)
+    // 3x3 Texture Neighborhood Fetch
     float c00 = fetchLinearSample(p, uBayerPattern);
     float cN  = fetchLinearSample(p + ivec2( 0, -1), uBayerPattern);
     float cS  = fetchLinearSample(p + ivec2( 0,  1), uBayerPattern);
@@ -118,40 +114,59 @@ void main() {
     float cSE = fetchLinearSample(p + ivec2( 1,  1), uBayerPattern);
 
     vec3 debayeredRgb;
-
     if (centerCfa == 0) { // Center is RED
         debayeredRgb.r = c00;
         float dH = abs(cW - cE);
         float dV = abs(cN - cS);
         debayeredRgb.g = (dH < dV) ? 0.5 * (cW + cE) : (dV < dH) ? 0.5 * (cN + cS) : 0.25 * (cW + cE + cN + cS);
         debayeredRgb.b = 0.25 * (cNW + cNE + cSW + cSE);
-
     } else if (centerCfa == 3) { // Center is BLUE
         debayeredRgb.b = c00;
         float dH = abs(cW - cE);
         float dV = abs(cN - cS);
         debayeredRgb.g = (dH < dV) ? 0.5 * (cW + cE) : (dV < dH) ? 0.5 * (cN + cS) : 0.25 * (cW + cE + cN + cS);
         debayeredRgb.r = 0.25 * (cNW + cNE + cSW + cSE);
-
-    } else if (centerCfa == 1) { // Center is Green on Red row (Gr)
+    } else if (centerCfa == 1) { // Center is Gr
         debayeredRgb.g = c00;
         debayeredRgb.r = 0.5 * (cW + cE);
         debayeredRgb.b = 0.5 * (cN + cS);
-
-    } else { // Center is Green on Blue row (Gb)
+    } else { // Center is Gb
         debayeredRgb.g = c00;
         debayeredRgb.b = 0.5 * (cW + cE);
         debayeredRgb.r = 0.5 * (cN + cS);
     }
 
-    // Color Space Transformation: White balance -> Sensor RGB to Linear BT.2020 -> Exposure Gain
-    vec3 wbRgb = debayeredRgb * uColorGains;
-    vec3 linearWorking = uColorMatrix * wbRgb;
-    vec3 linearExposed = max(linearWorking * uExposureGain, vec3(0.0));
+    // Step 2: Lens Shading Correction (Phase 2.2: Apply before white balance)
+    if (uHasLensShading == 1) {
+        vec2 normUv = vec2(p) / vec2(uSensorResolution);
+        vec4 lsGains = texture(uLensShadingMap, normUv); // [R, Gr, Gb, B]
+        debayeredRgb.r *= lsGains.r;
+        debayeredRgb.g *= 0.5 * (lsGains.g + lsGains.b);
+        debayeredRgb.b *= lsGains.a;
+    }
 
-    // Transfer Function: Dynamic Log Curve (0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log)
-    vec3 logOutput = clamp(applyLogOETF(linearExposed, uLogCurveType), 0.0, 1.0);
+    // Step 3: White Balance & Post-WB Highlight Clamping (Phase 2.3)
+    // Divide by SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+    vec3 neutral = max(uNeutralColorPoint, vec3(1e-4));
+    vec3 wbRgb = debayeredRgb / neutral;
 
-    // Output clean 10-bit Log
-    outLogColor = vec4(logOutput, 1.0);
+    // Highlight Clamp: Ensure clipped highlights stay neutral white rather than magenta
+    wbRgb = min(wbRgb, vec3(1.0));
+
+    // Step 4 & 5 & 6 & 7: Camera -> XYZ(D50) -> Bradford D65 -> Rec.2020 Linear + Exposure Gain
+    // Evaluated via pre-composed composite matrix
+    vec3 linearWorking = uCompositeMatrix * wbRgb;
+
+    // Step 8: Apply Selected Log OETF
+    vec3 logOutput;
+    if (uLogCurveType == 1) {
+        logOutput = applySLog3OETF(linearWorking);
+    } else if (uLogCurveType == 2) {
+        logOutput = applyAppleLogOETF(linearWorking);
+    } else {
+        logOutput = applyPixelLogOETF(linearWorking);
+    }
+
+    // Final 10-bit output clamp [0.0, 1.0]
+    outLogColor = vec4(clamp(logOutput, 0.0, 1.0), 1.0);
 }

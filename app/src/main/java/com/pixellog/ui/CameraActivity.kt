@@ -1,13 +1,16 @@
 package com.pixellog.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -25,11 +28,15 @@ import com.pixellog.R
 import com.pixellog.audio.AudioCapturePipeline
 import com.pixellog.audio.AudioInputManager
 import com.pixellog.camera.CameraController
+import com.pixellog.camera.LogParams
 import com.pixellog.nativebridge.PixelLogEngine
 import com.pixellog.recording.PixelLogEncoderPipeline
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.roundToInt
 
 class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
@@ -57,6 +64,17 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var btnModeSwitch: Button
     private lateinit var btnRecord: Button
     private lateinit var panelManualControls: LinearLayout
+
+    // Multi-Lens Selector Buttons (0.5x, 1x, 2x, 5x, 10x)
+    private lateinit var btnLens05x: Button
+    private lateinit var btnLens1x: Button
+    private lateinit var btnLens2x: Button
+    private lateinit var btnLens5x: Button
+    private lateinit var btnLens10x: Button
+
+    // Thermal Throttling Monitoring
+    private var powerManager: PowerManager? = null
+    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
 
     private lateinit var progressAudioL: ProgressBar
     private lateinit var progressAudioR: ProgressBar
@@ -148,6 +166,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         viewfinderSurface.holder.addCallback(this)
 
         setupListeners()
+        setupLensControls()
+        setupThermalMonitoring()
 
         if (!hasPermissions()) {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, PERMISSIONS_REQUEST_CODE)
@@ -159,6 +179,86 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun hasPermissions(): Boolean {
         return REQUIRED_PERMISSIONS.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    private fun setupLensControls() {
+        btnLens05x = findViewById(R.id.btnLens05x)
+        btnLens1x = findViewById(R.id.btnLens1x)
+        btnLens2x = findViewById(R.id.btnLens2x)
+        btnLens5x = findViewById(R.id.btnLens5x)
+        btnLens10x = findViewById(R.id.btnLens10x)
+
+        btnLens05x.setOnClickListener { switchLens(CameraController.LensZoom.UW_05X) }
+        btnLens1x.setOnClickListener { switchLens(CameraController.LensZoom.WIDE_1X) }
+        btnLens2x.setOnClickListener { switchLens(CameraController.LensZoom.CROP_2X) }
+        btnLens5x.setOnClickListener { switchLens(CameraController.LensZoom.TELE_5X) }
+        btnLens10x.setOnClickListener { switchLens(CameraController.LensZoom.CROP_10X) }
+
+        updateLensButtonsUi(cameraController.currentLens)
+    }
+
+    private fun switchLens(lens: CameraController.LensZoom) {
+        if (isRecording) {
+            Toast.makeText(this, "Cannot switch lens while recording", Toast.LENGTH_SHORT).show()
+            return
+        }
+        cameraController.setLensZoom(lens)
+        updateLensButtonsUi(lens)
+        updateResolutionIndicator()
+        Toast.makeText(this, "Lens: ${lens.displayName}", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateResolutionIndicator() {
+        textGateResolution.text = "${cameraController.activeWidth}x${cameraController.activeHeight} 4:3 OPEN GATE | ${cameraController.currentLens.displayName}"
+    }
+
+    private fun updateLensButtonsUi(activeLens: CameraController.LensZoom) {
+        val buttons = listOf(
+            Pair(CameraController.LensZoom.UW_05X, btnLens05x),
+            Pair(CameraController.LensZoom.WIDE_1X, btnLens1x),
+            Pair(CameraController.LensZoom.CROP_2X, btnLens2x),
+            Pair(CameraController.LensZoom.TELE_5X, btnLens5x),
+            Pair(CameraController.LensZoom.CROP_10X, btnLens10x)
+        )
+        for ((lens, btn) in buttons) {
+            if (lens == activeLens) {
+                btn.setBackgroundColor(0xFF00E5FF.toInt())
+                btn.setTextColor(0xFF000000.toInt())
+            } else {
+                btn.setBackgroundColor(0x80333333.toInt())
+                btn.setTextColor(0xFFFFFFFF.toInt())
+            }
+        }
+    }
+
+    private fun setupThermalMonitoring() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
+                when (status) {
+                    PowerManager.THERMAL_STATUS_NONE -> Log.d(TAG, "Thermal status: NONE")
+                    PowerManager.THERMAL_STATUS_LIGHT -> Log.i(TAG, "Thermal status: LIGHT")
+                    PowerManager.THERMAL_STATUS_MODERATE -> {
+                        Log.w(TAG, "Thermal status: MODERATE")
+                        runOnUiThread {
+                            Toast.makeText(this, "Device warm (MODERATE thermal)", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    PowerManager.THERMAL_STATUS_SEVERE,
+                    PowerManager.THERMAL_STATUS_CRITICAL,
+                    PowerManager.THERMAL_STATUS_EMERGENCY,
+                    PowerManager.THERMAL_STATUS_SHUTDOWN -> {
+                        Log.e(TAG, "Thermal status: THROTTLING ($status)")
+                        runOnUiThread {
+                            Toast.makeText(this, "THERMAL THROTTLING: Device is hot! Consider stopping recording.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            thermalListener?.let { listener ->
+                powerManager?.addThermalStatusListener(mainExecutor, listener)
+            }
         }
     }
 
@@ -207,7 +307,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             val nextConfig = allConfigs[nextIndex]
             cameraController.setFramerate(nextConfig)
             btnFramerate.text = "FPS: ${nextConfig.label}"
-            textGateResolution.text = "${cameraController.activeWidth}x${cameraController.activeHeight} 4:3 OPEN GATE"
+            updateResolutionIndicator()
         }
 
         btnCodec.setOnClickListener {
@@ -390,20 +490,142 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         btnRecord.setBackgroundColor(0xFFFF1744.toInt())
 
         val recordedFile = encoderPipeline?.outputFile
+        val durationMs = System.currentTimeMillis() - recordStartTimeMs
         engine.setEncoderSurface(null)
         encoderPipeline?.stopRecording()
         encoderPipeline = null
 
-        // Register saved video clip into Android MediaStore so Gallery/Files app sees it immediately
+        // Generate Sidecar JSON and register clip with MediaScanner
         if (recordedFile != null && recordedFile.exists()) {
-            MediaScannerConnection.scanFile(
-                this,
-                arrayOf(recordedFile.absolutePath),
-                arrayOf("video/mp4")
-            ) { path, uri ->
-                Log.i(TAG, "MediaScanner registered clip: $path -> $uri")
+            val sidecarFile = generateSidecarJson(recordedFile, durationMs)
+            val filesToScan = if (sidecarFile != null && sidecarFile.exists()) {
+                arrayOf(recordedFile.absolutePath, sidecarFile.absolutePath)
+            } else {
+                arrayOf(recordedFile.absolutePath)
             }
-            Toast.makeText(this, "Saved: ${recordedFile.name}", Toast.LENGTH_LONG).show()
+            val mimeTypes = if (filesToScan.size > 1) {
+                arrayOf("video/mp4", "application/json")
+            } else {
+                arrayOf("video/mp4")
+            }
+            MediaScannerConnection.scanFile(this, filesToScan, mimeTypes) { path, uri ->
+                Log.i(TAG, "MediaScanner registered: $path -> $uri")
+            }
+            Toast.makeText(this, "Saved: ${recordedFile.name} (+json)", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun generateSidecarJson(videoFile: File, durationMs: Long): File? {
+        return try {
+            val jsonFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.json")
+            val root = JSONObject()
+
+            // Clip & General
+            root.put("clip_name", videoFile.name)
+            root.put("format_version", "1.0")
+            root.put("created_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSZ", Locale.US).format(Date(recordStartTimeMs)))
+
+            // Device Info (Pixel 11 Pro grizzly)
+            val devObj = JSONObject().apply {
+                put("manufacturer", Build.MANUFACTURER)
+                put("model", Build.MODEL)
+                put("device", Build.DEVICE)
+                put("product", Build.PRODUCT)
+                put("board", Build.BOARD)
+                put("hardware", Build.HARDWARE)
+                put("android_version", Build.VERSION.RELEASE)
+                put("api_level", Build.VERSION.SDK_INT)
+            }
+            root.put("device_info", devObj)
+
+            // Video Stream Info
+            val vidObj = JSONObject().apply {
+                put("codec", currentCodec.displayName)
+                put("mime_type", currentCodec.mimeType)
+                put("width", encoderPipeline?.width ?: cameraController.activeWidth)
+                put("height", encoderPipeline?.height ?: cameraController.activeHeight)
+                put("frame_rate", cameraController.currentFramerate.fps)
+                put("bitrate_preset", currentBitratePreset.label)
+                put("target_bitrate_bps", currentBitratePreset.targetBps)
+                put("color_standard", "BT.2020")
+                put("color_range", "Limited (64-940 / 64-960)")
+                put("color_transfer", LogParams.CURVE_NAME)
+                put("bit_depth", 10)
+            }
+            root.put("video", vidObj)
+
+            // Camera & Sensor State
+            val camObj = JSONObject().apply {
+                put("camera_id", cameraController.currentCameraId)
+                put("lens_zoom", cameraController.currentLens.label)
+                put("focal_length_equiv_mm", cameraController.currentLens.focalLengthEquivMm)
+                put("is_crop", cameraController.currentLens.isCrop)
+                put("crop_factor", cameraController.currentLens.cropFactor.toDouble())
+                put("cfa_pattern", if (cameraController.bayerPattern == 0) "RGGB" else "CFA_${cameraController.bayerPattern}")
+                put("iso", cameraController.lastIso)
+                put("shutter_ns", cameraController.lastExposureNs)
+                val shutterAngle = ((cameraController.lastExposureNs.toDouble() / cameraController.currentFramerate.frameDurationNs.toDouble()) * 360.0).roundToInt()
+                put("shutter_angle_deg", shutterAngle)
+                put("kelvin", cameraController.targetKelvin)
+                put("tint", cameraController.targetTint)
+            }
+            root.put("camera", camObj)
+
+            // Color Science & Pipeline Parameters (Phase 2 & 3 Single Source of Truth)
+            val csObj = JSONObject().apply {
+                put("curve_name", LogParams.CURVE_NAME)
+                put("gamut", LogParams.GAMUT)
+                val paramsObj = JSONObject().apply {
+                    put("yb", LogParams.YB.toDouble())
+                    put("ym", LogParams.YM.toDouble())
+                    put("k", LogParams.K.toDouble())
+                    put("xmax", LogParams.XMAX.toDouble())
+                    put("beta", LogParams.BETA.toDouble())
+                    put("gamma", LogParams.GAMMA.toDouble())
+                    put("delta", LogParams.DELTA.toDouble())
+                    put("s", LogParams.S.toDouble())
+                }
+                put("curve_params", paramsObj)
+
+                put("dynamic_black_level", JSONArray(cameraController.lastDynamicBlackLevel.map { it.toDouble() }))
+                put("white_level", cameraController.lastWhiteLevel.toDouble())
+                put("neutral_color_point", JSONArray(cameraController.lastNeutralColorPoint.map { it.toDouble() }))
+
+                val calib = cameraController.currentCalibration
+                if (calib != null) {
+                    put("forward_matrix1", JSONArray(calib.forwardMatrix1.map { it.toDouble() }))
+                    put("forward_matrix2", JSONArray(calib.forwardMatrix2.map { it.toDouble() }))
+                    put("calibration_transform1", JSONArray(calib.calibrationTransform1.map { it.toDouble() }))
+                    put("calibration_transform2", JSONArray(calib.calibrationTransform2.map { it.toDouble() }))
+                }
+                put("composite_matrix_3x3", JSONArray(cameraController.lastCompositeMatrix.map { it.toDouble() }))
+            }
+            root.put("color_science", csObj)
+
+            // Capture Stats
+            val statsObj = JSONObject().apply {
+                put("duration_ms", durationMs)
+                val estFrames = (durationMs * cameraController.currentFramerate.fps / 1000.0).roundToInt()
+                put("estimated_frames", estFrames)
+            }
+            root.put("stats", statsObj)
+
+            try {
+                jsonFile.writeText(root.toString(2))
+                Log.i(TAG, "Sidecar metadata written: ${jsonFile.absolutePath}")
+                jsonFile
+            } catch (ioe: Exception) {
+                Log.w(TAG, "Direct write to ${jsonFile.absolutePath} failed (${ioe.message}), writing to fallback app external files dir")
+                val fallbackDir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+                fallbackDir.mkdirs()
+                val fallbackFile = File(fallbackDir, "${videoFile.nameWithoutExtension}.json")
+                fallbackFile.writeText(root.toString(2))
+                Log.i(TAG, "Sidecar metadata written to fallback: ${fallbackFile.absolutePath}")
+                fallbackFile
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write sidecar metadata", e)
+            null
         }
     }
 
@@ -422,7 +644,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         cameraController.start()
         cameraController.openCamera(4080, 3064)
         engine.setDisplaySurface(holder.surface)
-        textGateResolution.text = "${cameraController.activeWidth}x${cameraController.activeHeight} 4:3 OPEN GATE"
+        updateResolutionIndicator()
+        updateLensButtonsUi(cameraController.currentLens)
         loadAssetLut()
     }
 
@@ -496,6 +719,10 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun onDestroy() {
         super.onDestroy()
         if (isRecording) stopRecording()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && thermalListener != null) {
+            powerManager?.removeThermalStatusListener(thermalListener!!)
+            thermalListener = null
+        }
         audioCapturePipeline?.stopCapture()
         audioCapturePipeline = null
         audioInputManager.release()

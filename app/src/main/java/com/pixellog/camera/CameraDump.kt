@@ -167,13 +167,12 @@ object CameraDump {
         obj.put("reference_illuminant_1", chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1) ?: 0)
         obj.put("reference_illuminant_2", chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2) ?: 0)
 
-        // Lens shading map size
-        val shadingSize = chars.get(CameraCharacteristics.LENS_INFO_SHADING_MAP_SIZE)
-        if (shadingSize != null) {
-            val shadeObj = JSONObject()
-            shadeObj.put("width", shadingSize.width)
-            shadeObj.put("height", shadingSize.height)
-            obj.put("lens_shading_map_size", shadeObj)
+        // Lens shading map modes
+        val shadingModes = chars.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES)
+        if (shadingModes != null) {
+            val modesArray = JSONArray()
+            for (m in shadingModes) modesArray.put(m)
+            obj.put("lens_shading_map_modes", modesArray)
         }
 
         // Physical Sub-Cameras if Logical Multi-Camera
