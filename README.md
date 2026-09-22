@@ -1,5 +1,6 @@
 # PixelLog: Zero-Copy Open-Gate Video Subsystem
 ### Target Platform: Google Pixel 11 Pro (Tensor G6 SoC, 12GB LPDDR5X)
+#### Created with Antigravity
 
 **PixelLog** is a lightweight, zero-copy, open-gate (4:3) cinema video recording subsystem engineered specifically for the Google Pixel 11 Pro. It replaces generic lossy mobile video pipelines with a direct raw sensor ingestion engine, bespoke sensor-matched **Pixel-Log** transfer curve, real-time GPU debayering, 10-bit HEVC hardware encoding, and a calibrated DaVinci Resolve post-production grading suite.
 <p align="center">
