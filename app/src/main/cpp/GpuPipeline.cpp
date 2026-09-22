@@ -98,8 +98,10 @@ float fetchLinearSample(ivec2 p, int pattern) {
     uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
     float raw = float(rawInt);
 
-    int cfa = getCfaChannel(p, pattern);
-    float bl = uBlackLevel[cfa];
+    // 2D Spatial quad index: 0:(0,0) TL, 1:(1,0) TR, 2:(0,1) BL, 3:(1,1) BR
+    // Matches Android SENSOR_BLACK_LEVEL_PATTERN specification
+    int quadIdx = ((p.y & 1) << 1) | (p.x & 1);
+    float bl = uBlackLevel[quadIdx];
     float wl = uWhiteLevel;
 
     return (raw - bl) / max(wl - bl, 1e-6);
@@ -225,13 +227,12 @@ layout(location = 0) out vec4 outDisplayColor;
 uniform sampler2D uLogTexture;
 uniform sampler3D uLut3D;
 
-const float LUT_SIZE = 33.0;
-const float LUT_SCALE = (LUT_SIZE - 1.0) / LUT_SIZE;
-const float LUT_OFFSET = 0.5 / LUT_SIZE;
-
 void main() {
     vec3 logColor = texture(uLogTexture, vTexCoord).rgb;
-    vec3 lutCoord = clamp(logColor, 0.0, 1.0) * LUT_SCALE + LUT_OFFSET;
+    float lutSize = float(textureSize(uLut3D, 0).x);
+    float lutScale = (lutSize - 1.0) / lutSize;
+    float lutOffset = 0.5 / lutSize;
+    vec3 lutCoord = clamp(logColor, 0.0, 1.0) * lutScale + lutOffset;
     vec3 gradedRgb = texture(uLut3D, lutCoord).rgb;
     outDisplayColor = vec4(gradedRgb, 1.0);
 }
@@ -256,6 +257,7 @@ GpuPipeline::GpuPipeline()
       mHeight(0),
       mInitialized(false),
       mIsLutEnabled(true),
+      mBakeLutToEncoder(false),
       mLogCurveType(0),
       mExposureGain(11.5200f),
       mEglDisplay(EGL_NO_DISPLAY),
@@ -747,7 +749,8 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     mImporter.destroyTexture(rawTexture);
 
     // =========================================================================
-    // PASS 2: Render clean 10-bit Log to MediaCodec Input Surface
+    // =========================================================================
+    // PASS 2: Render to MediaCodec Input Surface (Bake LUT or clean 10-bit Log)
     // =========================================================================
     if (mEglEncoderSurface != EGL_NO_SURFACE) {
         eglMakeCurrent(mEglDisplay, mEglEncoderSurface, mEglEncoderSurface, mEglContext);
@@ -759,25 +762,36 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
         eglQuerySurface(mEglDisplay, mEglEncoderSurface, EGL_HEIGHT, &encHeight);
         glViewport(0, 0, encWidth, encHeight);
 
-        if (mPassthroughProgram != 0) {
+        bool bakeLut = mBakeLutToEncoder.load() && mLutManager.isLoaded();
+        if (bakeLut && mLutProgram != 0) {
+            glUseProgram(mLutProgram);
+
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, mOffscreenTexture);
+            glUniform1i(glGetUniformLocation(mLutProgram, "uLogTexture"), 0);
+
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_3D, mLutManager.getLutTextureId());
+            glUniform1i(glGetUniformLocation(mLutProgram, "uLut3D"), 1);
+        } else if (mPassthroughProgram != 0) {
             glUseProgram(mPassthroughProgram);
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, mOffscreenTexture);
             glUniform1i(glGetUniformLocation(mPassthroughProgram, "uTexture"), 0);
-
-            glBindBuffer(GL_ARRAY_BUFFER, mDisplayQuadVbo);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-            glDisableVertexAttribArray(0);
-            glDisableVertexAttribArray(1);
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
         }
+
+        glBindBuffer(GL_ARRAY_BUFFER, mDisplayQuadVbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
 
         if (mEglPresentationTimeANDROID) {
             mEglPresentationTimeANDROID(mEglDisplay, mEglEncoderSurface, metadata.timestampNs);
@@ -786,7 +800,8 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
 
         static uint64_t encFrameCount = 0;
         if (encFrameCount++ % 30 == 0) {
-            LOGI("GpuPipeline: Pass 2 rendered clean Log to encoder surface (viewport %dx%d, pts %lld ns)",
+            LOGI("GpuPipeline: Pass 2 rendered %s to encoder surface (viewport %dx%d, pts %lld ns)",
+                 bakeLut ? "BAKED 3D LUT" : "clean Log",
                  encWidth, encHeight, (long long)metadata.timestampNs);
         }
     }

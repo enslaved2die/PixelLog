@@ -4,4 +4,22 @@
     <color name="white">#FFFFFFFF</color>
     <color name="cyan_accent">#00E5FF</color>
     <color name="rec_red">#FF1744</color>
+    <color name="rec_red_dark">#DA1E3F</color>
+    <color name="overlay_15">#26FFFFFF</color>
+    <color name="overlay_25">#40FFFFFF</color>
+    <color name="overlay_50">#80FFFFFF</color>
+    <color name="modal_bg">#F2232424</color>
+    <color name="modal_bg_50">#111212</color>
+    <color name="perf_bar_bg">#2F2F2F</color>
+    <color name="audio_meter_track">#2F2F2F</color>
+    <color name="audio_meter_green">#54E14B</color>
+    <color name="audio_meter_orange">#E1884B</color>
+    <color name="audio_meter_red">#FF1744</color>
+    <color name="audio_l_orange">#E1884B</color>
+    <color name="audio_r_green">#54E14B</color>
+    <color name="perf_cpu_orange">#E1884B</color>
+    <color name="perf_ram_green">#54E14B</color>
+    <color name="perf_gpu_blue">#4B8DE1</color>
+    <color name="text_secondary">#80FFFFFF</color>
+    <color name="dial_tick_white">#FFFFFFFF</color>
 </resources>

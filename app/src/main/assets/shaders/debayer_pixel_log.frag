@@ -52,8 +52,10 @@ float fetchLinearSample(ivec2 p, int pattern) {
     uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
     float raw = float(rawInt);
 
-    int cfa = getCfaChannel(p, pattern);
-    float bl = uBlackLevel[cfa];
+    // 2D Spatial quad index: 0:(0,0) TL, 1:(1,0) TR, 2:(0,1) BL, 3:(1,1) BR
+    // Matches Android SENSOR_BLACK_LEVEL_PATTERN specification
+    int quadIdx = ((p.y & 1) << 1) | (p.x & 1);
+    float bl = uBlackLevel[quadIdx];
     float wl = uWhiteLevel;
 
     // Linear un-clamped normalization

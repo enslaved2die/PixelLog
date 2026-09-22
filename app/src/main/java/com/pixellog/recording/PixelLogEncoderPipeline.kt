@@ -32,7 +32,8 @@ class PixelLogEncoderPipeline(
     val targetBitrate: Int = bitratePreset.targetBps,
     val peakBitrate: Int = bitratePreset.peakBps,
     val outputFile: File,
-    val audioCapturePipeline: AudioCapturePipeline? = null
+    val audioCapturePipeline: AudioCapturePipeline? = null,
+    val colorTransfer: ColorTransferMode = ColorTransferMode.SDR_LOG
 ) {
     companion object {
         private const val TAG = "PixelLogEncoder"
@@ -53,15 +54,16 @@ class PixelLogEncoderPipeline(
                     val w = (sensorWidth / 64) * 64
                     val h = (sensorHeight / 64) * 64
                     Pair(w, h)
+                } else if (sensorWidth <= 3500) {
+                    // EIS / FULL crop resolution (3468x2600): Align to mod-64 (3456x2560) for AV1 block limit
+                    Pair(3456, 2560)
                 } else {
                     // Full sensor: Mod-64 3328x2496 complies with Tensor G6 2040 block limit
                     Pair(3328, 2496)
                 }
             } else {
-                // HEVC supports full sensor open gate
-                val w = (sensorWidth / 2) * 2
-                val h = (sensorHeight / 2) * 2
-                Pair(w, h)
+                // HEVC Hardware Encoder natively handles open gate 4080x3064 and 3468x2600
+                Pair(sensorWidth, sensorHeight)
             }
         }
     }
@@ -76,6 +78,11 @@ class PixelLogEncoderPipeline(
         MBPS_100(100_000_000, 120_000_000, "100 Mbps"),
         MBPS_140(140_000_000, 180_000_000, "140 Mbps"),
         MBPS_180(180_000_000, 220_000_000, "180 Mbps")
+    }
+
+    enum class ColorTransferMode(val label: String, val transferValue: Int) {
+        SDR_LOG("LOG", MediaFormat.COLOR_TRANSFER_SDR_VIDEO),
+        HLG("HLG", MediaFormat.COLOR_TRANSFER_HLG)
     }
 
     private var mediaCodec: MediaCodec? = null
@@ -134,10 +141,10 @@ class PixelLogEncoderPipeline(
             }
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
 
-            // Bitstream Color Space Signaling (BT.2020 Primaries, Limited Range, SDR Transfer for Log)
+            // Bitstream Color Space Signaling (BT.2020 Primaries, Limited Range, SDR/HLG Transfer)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, colorTransfer.transferValue)
 
             // Bitrate & Rate Control
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)

@@ -105,17 +105,64 @@ def test_cube_lut_files():
     assert len(data_1d) == 4096, f"Expected 4096 entries, got {len(data_1d)}"
     print(f"  Verified 1D LUT: {len(data_1d)} entries.")
 
-    for path in [lut_3d, lut_asset]:
+    # Verify all generated 3D LUTs in post_production and app assets
+    check_luts = [
+        os.path.join(repo_dir, "post_production", "PixelLog_to_Rec709_Display_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_Rec709_Display_65.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_AgX_Rec709_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_AgX_Rec709_65.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_AgX_Punchy_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_AgX_Punchy_65.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_DWG_Intermediate_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_DWG_Intermediate_65.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_ACEScg_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_ACEScg_65.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_Rec2020_Linear_33.cube"),
+        os.path.join(repo_dir, "post_production", "PixelLog_to_Rec2020_Linear_65.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_Rec709_Display.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_AgX_Base.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_AgX_Punchy.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_DWG_Intermediate.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_ACEScg.cube"),
+        os.path.join(repo_dir, "app", "src", "main", "assets", "luts", "PixelLog_to_Rec2020_Linear.cube"),
+    ]
+
+    for path in check_luts:
         assert os.path.exists(path), f"3D LUT missing: {path}"
         with open(path, "r") as f:
             lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
-        assert any(l.startswith("LUT_3D_SIZE 33") for l in lines)
+        size_line = [l for l in lines if l.startswith("LUT_3D_SIZE")]
+        assert len(size_line) > 0, f"Missing LUT_3D_SIZE in {path}"
+        size = int(size_line[0].split()[1])
+        assert size in (33, 65), f"Unexpected LUT size {size} in {path}"
         data_rows = [l for l in lines if not any(l.startswith(k) for k in ["TITLE", "LUT_", "DOMAIN_"])]
-        expected = 33 * 33 * 33
-        assert len(data_rows) == expected, f"Expected {expected}, got {len(data_rows)}"
-        print(f"  Verified 3D LUT {os.path.basename(path)}: {expected} entries.")
+        expected = size * size * size
+        assert len(data_rows) == expected, f"Expected {expected}, got {len(data_rows)} in {path}"
+        print(f"  Verified 3D LUT {os.path.basename(path)}: {size}^3 ({expected} entries).")
 
-    print("  -> PASS: All LUT files verified.")
+    # Verify rectified tone mapping curve anchors
+    import sys
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
+    import tools.make_luts as ml
+    y_grey = ml.filmic_tone_curve(0.18)
+    ire_grey = ml.rec709_oetf(y_grey) * 100.0
+    y_white = ml.filmic_tone_curve(1.0)
+    ire_white = ml.rec709_oetf(y_white) * 100.0
+    print(f"  Rectified Tone Curve: 18% Grey = {ire_grey:.1f} IRE (Expected ~42 IRE), 100% White = {ire_white:.1f} IRE (Expected ~90 IRE)")
+    assert 41.5 <= ire_grey <= 42.5, f"18% grey off target: {ire_grey:.2f} IRE"
+    assert 89.0 <= ire_white <= 91.0, f"100% white off target: {ire_white:.2f} IRE"
+
+    # Verify AgX Transform properties
+    agx_grey = ml.apply_agx_transform([0.18, 0.18, 0.18], look="base")
+    assert 0.48 <= agx_grey[0] <= 0.52, f"AgX grey off target: {agx_grey[0]}"
+    # Verify highlight desaturation on bright orange flame [R=8.0, G=1.2, B=0.05]
+    flame_out = ml.apply_agx_transform([8.0, 1.2, 0.05], look="base")
+    assert flame_out[0] == 1.0, "Red should reach 1.0"
+    assert flame_out[2] > 0.5, f"AgX must preserve blue component in flame highlights: {flame_out[2]}"
+    print(f"  Verified AgX Color Transform: Grey={agx_grey[0]*100:.1f} IRE, Flame Highlight Blue={flame_out[2]:.4f} (desaturated white core).")
+
+    print("  -> PASS: All LUT files and rectified tone curve verified.")
 
 def test_dctl_and_matrices(p):
     print("[TEST 5] Verifying DCTL and Gamut Matrices...")

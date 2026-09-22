@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Outer stroke ring: 4.7dp stroke, 25% white (#40FFFFFF) -->
+    <item>
+        <shape android:shape="oval">
+            <stroke
+                android:width="4.7dp"
+                android:color="#40FFFFFF" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+    <!-- Inner stop square (#DA1E3F) -->
+    <item
+        android:bottom="22dp"
+        android:left="22dp"
+        android:right="22dp"
+        android:top="22dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#DA1E3F" />
+            <corners android:radius="6dp" />
+        </shape>
+    </item>
+</layer-list>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Outer stroke ring: 4.7dp stroke, 25% white (#40FFFFFF) -->
+    <item>
+        <shape android:shape="oval">
+            <stroke
+                android:width="4.7dp"
+                android:color="#40FFFFFF" />
+            <solid android:color="@android:color/transparent" />
+        </shape>
+    </item>
+    <!-- Inner record circular disc (#DA1E3F) directly filling within the outer stroke -->
+    <item
+        android:bottom="4.7dp"
+        android:left="4.7dp"
+        android:right="4.7dp"
+        android:top="4.7dp">
+        <shape android:shape="oval">
+            <solid android:color="#DA1E3F" />
+        </shape>
+    </item>
+</layer-list>

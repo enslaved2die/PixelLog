@@ -85,6 +85,99 @@ object ColorScienceUtils {
     const val MIRED_STANDARD_A = 1_000_000.0f / TEMP_STANDARD_A // ~350.14
     const val MIRED_D65        = 1_000_000.0f / TEMP_D65        // ~153.75
 
+    // Pixel-Log Exposure Scaling Constant (k = 5.5 stops above 18% grey)
+    const val LOG_XMAX = 8.14587012f
+
+    // Factory Calibrated Profiles from Google Pixel 11 Pro HAL (grizzly)
+    val DEFAULT_CALIBRATION_WIDE = CameraCalibration(
+        cameraId = "2",
+        forwardMatrix1 = floatArrayOf(
+            0.6116f, 0.1736f, 0.1791f,
+            0.1363f, 0.8365f, 0.0272f,
+           -0.0418f, -0.5848f, 1.4517f
+        ),
+        forwardMatrix2 = floatArrayOf(
+            0.7145f, -0.0008f, 0.2506f,
+            0.2755f, 0.6223f, 0.1021f,
+            0.0512f, -0.5060f, 1.2799f
+        ),
+        calibrationTransform1 = floatArrayOf(
+            0.992281f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 1.002768f
+        ),
+        calibrationTransform2 = floatArrayOf(
+            0.989590f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.998444f
+        ),
+        whiteLevel = 4095.0f,
+        dynamicBlackLevel = floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f),
+        bayerPattern = 2 // GBRG
+    )
+
+    val DEFAULT_CALIBRATION_ULTRAWIDE = CameraCalibration(
+        cameraId = "3",
+        forwardMatrix1 = floatArrayOf(
+            0.7391f, 0.1889f, 0.0363f,
+            0.2698f, 0.8598f, -0.1296f,
+           -0.0084f, -0.5440f, 1.3775f
+        ),
+        forwardMatrix2 = floatArrayOf(
+            0.7166f, 0.1439f, 0.1038f,
+            0.2944f, 0.7786f, -0.0730f,
+            0.0470f, -0.4644f, 1.2425f
+        ),
+        calibrationTransform1 = floatArrayOf(
+            0.979521f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.983538f
+        ),
+        calibrationTransform2 = floatArrayOf(
+            0.981904f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.986035f
+        ),
+        whiteLevel = 1023.0f,
+        dynamicBlackLevel = floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f),
+        bayerPattern = 0 // RGGB
+    )
+
+    val DEFAULT_CALIBRATION_TELE = CameraCalibration(
+        cameraId = "4",
+        forwardMatrix1 = floatArrayOf(
+            0.7391f, 0.1888f, 0.0363f,
+            0.2698f, 0.8597f, -0.1295f,
+           -0.0082f, -0.5439f, 1.3772f
+        ),
+        forwardMatrix2 = floatArrayOf(
+            0.7166f, 0.1439f, 0.1038f,
+            0.2943f, 0.7786f, -0.0730f,
+            0.0470f, -0.4644f, 1.2425f
+        ),
+        calibrationTransform1 = floatArrayOf(
+            0.987344f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 1.010621f
+        ),
+        calibrationTransform2 = floatArrayOf(
+            0.982670f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 1.009225f
+        ),
+        whiteLevel = 1023.0f,
+        dynamicBlackLevel = floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f),
+        bayerPattern = 3 // BGGR
+    )
+
+    fun getDefaultCalibration(cameraId: String?): CameraCalibration {
+        return when (cameraId) {
+            "3" -> DEFAULT_CALIBRATION_ULTRAWIDE
+            "4" -> DEFAULT_CALIBRATION_TELE
+            else -> DEFAULT_CALIBRATION_WIDE
+        }
+    }
+
     /**
      * Converts Correlated Color Temperature (Kelvin) and Tint to CIE 1931 xy coordinates.
      */
@@ -133,8 +226,12 @@ object ColorScienceUtils {
             RggbChannelVector(red, greenEven, greenOdd, blue)
     }
 
-    fun calculateColorGains(kelvin: Int, tint: Int): ChannelGains {
-        val xy = kelvinTintToCieXy(kelvin, tint)
+    /**
+     * Computes the theoretical sensor neutral point [nR, 1.0, nB] along the Planckian / Daylight locus
+     * for a given Kelvin temperature by inverting the ForwardMatrix (SensorRGB = FM^-1 * XYZ).
+     */
+    fun computeModelNeutralPoint(kelvin: Int, calibration: CameraCalibration? = null): FloatArray {
+        val xy = kelvinTintToCieXy(kelvin, 0)
         val xw = xy[0]
         val yw = xy[1]
 
@@ -142,19 +239,65 @@ object ColorScienceUtils {
         val Yw = 1.0f
         val Zw = (1.0f - xw - yw) / yw
 
-        val mired = 1_000_000.0f / kelvin
+        val mired = 1_000_000.0f / kelvin.coerceIn(2000, 10000)
         val weight = ((mired - MIRED_STANDARD_A) / (MIRED_D65 - MIRED_STANDARD_A)).coerceIn(0.0f, 1.0f)
 
-        val rCam = (0.648f * Xw + 0.174f * Yw + 0.129f * Zw) * (1.0f - weight) +
-                   (0.602f * Xw + 0.185f * Yw + 0.155f * Zw) * weight
-        val gCam = (0.242f * Xw + 0.718f * Yw + 0.040f * Zw) * (1.0f - weight) +
-                   (0.230f * Xw + 0.725f * Yw + 0.045f * Zw) * weight
-        val bCam = (-0.015f * Xw - 0.083f * Yw + 1.187f * Zw) * (1.0f - weight) +
-                   (-0.012f * Xw - 0.075f * Yw + 1.120f * Zw) * weight
+        val calib = calibration ?: DEFAULT_CALIBRATION_WIDE
+        val fm1 = calib.forwardMatrix1
+        val fm2 = if (calib.forwardMatrix2.size >= 9) calib.forwardMatrix2 else fm1
 
-        val gainR = (gCam / max(rCam, 1e-4f)).coerceIn(0.5f, 4.0f)
-        val gainB = (gCam / max(bCam, 1e-4f)).coerceIn(0.5f, 4.0f)
+        // Interpolate ForwardMatrix at current mired
+        val fmInterp = FloatArray(9)
+        for (i in 0 until 9) {
+            fmInterp[i] = fm1[i] * (1.0f - weight) + fm2[i] * weight
+        }
 
+        // Invert ForwardMatrix: SensorRGB = FM^-1 * XYZ
+        val invFm = invertMat3(fmInterp)
+
+        val rCam = invFm[0] * Xw + invFm[1] * Yw + invFm[2] * Zw
+        val gCam = invFm[3] * Xw + invFm[4] * Yw + invFm[5] * Zw
+        val bCam = invFm[6] * Xw + invFm[7] * Yw + invFm[8] * Zw
+
+        val gNorm = max(gCam, 1e-4f)
+        return floatArrayOf(
+            (rCam / gNorm).coerceIn(0.1f, 10.0f),
+            1.0f,
+            (bCam / gNorm).coerceIn(0.1f, 10.0f)
+        )
+    }
+
+    /**
+     * Calculates the sensor neutral point [nR, 1.0, nB] for a given Kelvin temperature,
+     * maintaining the live scene's auto green-magenta tint via the Planckian ratio:
+     * n(T) = n_live * (n_model(T) / n_model(T_live))
+     */
+    fun calculateNeutralColorPoint(
+        kelvin: Int,
+        liveNeutral: FloatArray? = null,
+        liveKelvin: Int = 5600,
+        calibration: CameraCalibration? = null
+    ): FloatArray {
+        val targetModel = computeModelNeutralPoint(kelvin, calibration)
+        if (liveNeutral == null || liveNeutral.size < 3) {
+            return targetModel
+        }
+        val liveModel = computeModelNeutralPoint(liveKelvin.coerceIn(2000, 10000), calibration)
+
+        val rRatio = targetModel[0] / max(liveModel[0], 1e-4f)
+        val bRatio = targetModel[2] / max(liveModel[2], 1e-4f)
+
+        return floatArrayOf(
+            (liveNeutral[0] * rRatio).coerceIn(0.1f, 10.0f),
+            1.0f,
+            (liveNeutral[2] * bRatio).coerceIn(0.1f, 10.0f)
+        )
+    }
+
+    fun calculateColorGains(kelvin: Int, tint: Int = 0, calibration: CameraCalibration? = null): ChannelGains {
+        val neutral = computeModelNeutralPoint(kelvin, calibration)
+        val gainR = (1.0f / max(neutral[0], 1e-4f)).coerceIn(0.2f, 5.0f)
+        val gainB = (1.0f / max(neutral[2], 1e-4f)).coerceIn(0.2f, 5.0f)
         return ChannelGains(gainR, 1.0f, 1.0f, gainB)
     }
 
@@ -225,17 +368,38 @@ object ColorScienceUtils {
     }
 
     /**
-     * Estimates Correlated Color Temperature (Kelvin) from SENSOR_NEUTRAL_COLOR_POINT.
+     * Estimates Correlated Color Temperature (Kelvin) from SENSOR_NEUTRAL_COLOR_POINT
+     * using the ForwardMatrix and McCamy's empirical CCT cubic equation on CIE (x, y).
      * n = [n_R, n_G, n_B] where n_G is 1.0.
      */
-    fun estimateTemperatureFromNeutral(neutralPoint: FloatArray): Float {
+    fun estimateTemperatureFromNeutral(
+        neutralPoint: FloatArray,
+        calibration: CameraCalibration? = null
+    ): Float {
+        if (neutralPoint.size < 3) return 5600.0f
         val nR = max(neutralPoint[0], 0.01f)
+        val nG = max(neutralPoint[1], 0.01f)
         val nB = max(neutralPoint[2], 0.01f)
-        val ratio = nR / nB // High for tungsten (warm), low for daylight (cool)
 
-        // Empirical temperature mapping for typical mobile silicon CFA
-        val mired = 153.75f + (ratio - 0.70f) * 200.0f
-        return (1_000_000.0f / mired).coerceIn(2000.0f, 10000.0f)
+        val calib = calibration ?: DEFAULT_CALIBRATION_WIDE
+        val fm = calib.forwardMatrix1
+        val X = fm[0] * nR + fm[1] * nG + fm[2] * nB
+        val Y = fm[3] * nR + fm[4] * nG + fm[5] * nB
+        val Z = fm[6] * nR + fm[7] * nG + fm[8] * nB
+
+        val sum = X + Y + Z
+        if (sum <= 1e-4f) return 5600.0f
+
+        val x = (X / sum).toDouble()
+        val y = (Y / sum).toDouble()
+
+        val denom = 0.1858 - y
+        if (Math.abs(denom) < 1e-5) return 5600.0f
+
+        // McCamy's equation
+        val n = (x - 0.3320) / denom
+        val cct = 449.0 * (n * n * n) + 3525.0 * (n * n) + 6823.3 * n + 5520.33
+        return cct.toFloat().coerceIn(2000.0f, 10000.0f)
     }
 
     /**
@@ -250,15 +414,17 @@ object ColorScienceUtils {
     fun computeCompositeColorMatrix(
         neutralPoint: FloatArray? = null,
         calibration: CameraCalibration? = null,
-        exposureGain: Float = 8.14587f
+        exposureGain: Float = LOG_XMAX
     ): FloatArray {
-        if (calibration == null || calibration.forwardMatrix1.size < 9) {
-            // Return default column-major matrix
-            return M_SENSOR_TO_BT2020.clone()
+        val calib = calibration ?: DEFAULT_CALIBRATION_WIDE
+        if (calib.forwardMatrix1.size < 9) {
+            val m = M_SENSOR_TO_BT2020.clone()
+            for (i in m.indices) m[i] *= exposureGain
+            return m
         }
 
         val neutral = neutralPoint ?: floatArrayOf(0.55f, 1.0f, 0.70f)
-        val tempK = estimateTemperatureFromNeutral(neutral)
+        val tempK = estimateTemperatureFromNeutral(neutral, calib)
         val mired = 1_000_000.0f / tempK
 
         // Mired linear interpolation weight: w = (M - M1) / (M2 - M1)
@@ -266,16 +432,16 @@ object ColorScienceUtils {
 
         // 1. Interpolate ForwardMatrix
         val fmInterp = FloatArray(9)
-        val fm1 = calibration.forwardMatrix1
-        val fm2 = if (calibration.forwardMatrix2.size >= 9) calibration.forwardMatrix2 else fm1
+        val fm1 = calib.forwardMatrix1
+        val fm2 = if (calib.forwardMatrix2.size >= 9) calib.forwardMatrix2 else fm1
         for (i in 0 until 9) {
             fmInterp[i] = fm1[i] * (1.0f - w) + fm2[i] * w
         }
 
         // 2. Interpolate CalibrationTransform & Invert
         val ccInterp = FloatArray(9)
-        val cc1 = calibration.calibrationTransform1
-        val cc2 = if (calibration.calibrationTransform2.size >= 9) calibration.calibrationTransform2 else cc1
+        val cc1 = calib.calibrationTransform1
+        val cc2 = if (calib.calibrationTransform2.size >= 9) calib.calibrationTransform2 else cc1
         for (i in 0 until 9) {
             ccInterp[i] = cc1[i] * (1.0f - w) + cc2[i] * w
         }
@@ -301,14 +467,20 @@ object ColorScienceUtils {
     }
 
     fun computeCompositeColorMatrix(gR: Float, gG: Float, gB: Float): FloatArray {
-        return M_SENSOR_TO_BT2020.clone()
+        val m = M_SENSOR_TO_BT2020.clone()
+        for (i in m.indices) m[i] *= LOG_XMAX
+        return m
     }
 
     fun computeCompositeColorMatrix(gains: ChannelGains): FloatArray {
-        return M_SENSOR_TO_BT2020.clone()
+        val m = M_SENSOR_TO_BT2020.clone()
+        for (i in m.indices) m[i] *= LOG_XMAX
+        return m
     }
 
     fun computeCompositeColorMatrix(gains: RggbChannelVector): FloatArray {
-        return M_SENSOR_TO_BT2020.clone()
+        val m = M_SENSOR_TO_BT2020.clone()
+        for (i in m.indices) m[i] *= LOG_XMAX
+        return m
     }
 }

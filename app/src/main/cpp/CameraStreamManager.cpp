@@ -224,6 +224,10 @@ void CameraStreamManager::setLutEnabled(bool enabled) {
     mGpuPipeline.setLutEnabled(enabled);
 }
 
+void CameraStreamManager::setBakeLutToEncoder(bool enabled) {
+    mGpuPipeline.setBakeLutToEncoder(enabled);
+}
+
 void CameraStreamManager::setLogCurveType(int32_t type) {
     mGpuPipeline.setLogCurveType(type);
 }

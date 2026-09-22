@@ -29,9 +29,11 @@ public:
     // 3D LUT loading & curve controls
     bool loadDisplayLut(const char* cubeData, size_t dataSize);
     void setLutEnabled(bool enabled);
+    void setBakeLutToEncoder(bool enabled) { mBakeLutToEncoder.store(enabled); }
     void setLogCurveType(int32_t type);
     void setExposureGain(float gain);
     bool isLutEnabled() const;
+    bool isBakeLutToEncoder() const { return mBakeLutToEncoder.load(); }
     int32_t getLogCurveType() const;
     float getExposureGain() const;
 
@@ -52,6 +54,7 @@ private:
 
     // Pipeline controls
     std::atomic<bool> mIsLutEnabled;
+    std::atomic<bool> mBakeLutToEncoder{false};
     std::atomic<int32_t> mLogCurveType;
     std::atomic<float> mExposureGain;
 

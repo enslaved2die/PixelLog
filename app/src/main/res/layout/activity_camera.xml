@@ -1,454 +1,916 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/black"
     android:keepScreenOn="true">
 
-    <!-- 4:3 Open-Gate Viewfinder SurfaceView -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- 4:3 Open-Gate Viewfinder SurfaceView (center)  -->
+    <!-- ═══════════════════════════════════════════════ -->
     <SurfaceView
         android:id="@+id/viewfinderSurface"
         android:layout_width="0dp"
         android:layout_height="0dp"
+        android:layout_marginStart="70dp"
         app:layout_constraintDimensionRatio="4:3"
         app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Top Status Bar -->
-    <LinearLayout
-        android:id="@+id/topBar"
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- Focus & Exposure Viewfinder Overlay             -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <com.pixellog.ui.FocusExposureOverlayView
+        android:id="@+id/focusExposureOverlay"
         android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@android:color/transparent"
+        app:layout_constraintTop_toTopOf="@id/viewfinderSurface"
+        app:layout_constraintBottom_toBottomOf="@id/viewfinderSurface"
+        app:layout_constraintStart_toStartOf="@id/viewfinderSurface"
+        app:layout_constraintEnd_toEndOf="@id/viewfinderSurface" />
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- LEFT PANEL (letterbox / overlay)                -->
+    <!-- ═══════════════════════════════════════════════ -->
+
+    <!-- Remaining recording time (top-left) -->
+    <LinearLayout
+        android:id="@+id/panelRecordingTime"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="#80000000"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="20dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent">
 
         <TextView
-            android:id="@+id/textGateResolution"
-            android:layout_width="0dp"
+            android:id="@+id/textRemainingMinutes"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="4080x3072 4:3 OPEN GATE"
-            android:textColor="#00E5FF"
-            android:textSize="12sp"
+            android:fontFamily="@font/gabarito"
+            android:text="31"
+            android:textColor="@color/text_secondary"
+            android:textSize="22sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/textDcgMode"
+            android:id="@+id/textRemainingLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="12dp"
-            android:text="DCG: LCG"
-            android:textColor="#76FF03"
-            android:textSize="12sp"
+            android:fontFamily="@font/gabarito"
+            android:text="@string/label_min"
+            android:textColor="@color/text_secondary"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <!-- Performance Bars: CPU / RAM / GPU matching Penpot design -->
+    <com.pixellog.ui.PerformanceBarsView
+        android:id="@+id/performanceBarsView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="18dp"
+        android:layout_marginTop="16dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/panelRecordingTime" />
+
+    <!-- ═════════════════════════════════════════════════ -->
+    <!-- AUDIO VU METER (Bottom-Left Corner)               -->
+    <!-- Left: Orange (#E1884B), Right: Green (#54E14B)    -->
+    <!-- ═════════════════════════════════════════════════ -->
+    <LinearLayout
+        android:id="@+id/panelAudioMeters"
+        android:layout_width="wrap_content"
+        android:layout_height="140dp"
+        android:layout_marginStart="18dp"
+        android:layout_marginBottom="24dp"
+        android:gravity="bottom"
+        android:orientation="horizontal"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <!-- Left Channel (Loudness-colored: Green -> Orange -> Red) -->
+        <FrameLayout
+            android:id="@+id/trackAudioL"
+            android:layout_width="14dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_audio_meter_track">
+
+            <View
+                android:id="@+id/barAudioLFill"
+                android:layout_width="match_parent"
+                android:layout_height="80dp"
+                android:layout_gravity="bottom"
+                android:background="@drawable/bg_audio_meter_track"
+                android:backgroundTint="@color/audio_meter_green" />
+        </FrameLayout>
+
+        <!-- Right Channel (Loudness-colored: Green -> Orange -> Red) -->
+        <FrameLayout
+            android:id="@+id/trackAudioR"
+            android:layout_width="14dp"
+            android:layout_height="match_parent"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/bg_audio_meter_track">
+
+            <View
+                android:id="@+id/barAudioRFill"
+                android:layout_width="match_parent"
+                android:layout_height="50dp"
+                android:layout_gravity="bottom"
+                android:background="@drawable/bg_audio_meter_track"
+                android:backgroundTint="@color/audio_meter_green" />
+        </FrameLayout>
+    </LinearLayout>
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- RIGHT PANEL CONTROLS                           -->
+    <!-- ═══════════════════════════════════════════════ -->
+
+    <!-- Settings Gear Icon (top-right) -->
+    <ImageButton
+        android:id="@+id/btnSettings"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
+        android:layout_marginTop="21dp"
+        android:layout_marginEnd="26dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/content_desc_settings"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_settings_gear"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Timecode (left of settings icon) -->
+    <TextView
+        android:id="@+id/textTimecode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:fontFamily="monospace"
+        android:typeface="monospace"
+        android:text="00:00:00:00"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        app:layout_constraintBottom_toBottomOf="@id/btnSettings"
+        app:layout_constraintEnd_toStartOf="@id/btnSettings"
+        app:layout_constraintTop_toTopOf="@id/btnSettings" />
+
+    <!-- Stabilization Mode Switches (OFF / OIS / EIS / FULL) above Lens Selector -->
+    <LinearLayout
+        android:id="@+id/panelStabSwitch"
+        android:layout_width="wrap_content"
+        android:layout_height="30dp"
+        android:layout_marginStart="13dp"
+        android:layout_marginTop="20dp"
+        android:background="@drawable/bg_stab_switch_pill"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="3dp"
+        android:paddingEnd="3dp"
+        app:layout_constraintStart_toEndOf="@id/viewfinderSurface"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/btnStabOff"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="OFF"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/textTimecode"
+            android:id="@+id/btnStabOis"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="00:00:00:00"
-            android:textColor="#FFFFFF"
+            android:layout_height="24dp"
+            android:background="@drawable/bg_stab_item_active"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="OIS"
+            android:textColor="@color/white"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnStabEis"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="EIS"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/btnStabFull"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="FULL"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Vertical Lens Selector Pill (middle right, left of focus dial) -->
+    <LinearLayout
+        android:id="@+id/panelLensSelector"
+        android:layout_width="55dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="13dp"
+        android:background="@drawable/bg_lens_pill"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toEndOf="@id/viewfinderSurface"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:id="@+id/btnLens120"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:text="120"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnLens24"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:text="24"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/btnLens12"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:text="12"
+            android:textColor="@color/white"
             android:textSize="14sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Cinema Quick Control Bar -->
-    <HorizontalScrollView
-        android:id="@+id/quickControlsBar"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:scrollbars="none"
-        android:layout_marginTop="8dp"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/topBar">
+    <!-- Focus Auto/Manual Toggle ("A" default) -->
+    <TextView
+        android:id="@+id/btnFocusMode"
+        android:layout_width="44dp"
+        android:layout_height="36dp"
+        android:layout_marginBottom="6dp"
+        android:fontFamily="@font/gabarito"
+        android:gravity="center"
+        android:text="@string/label_auto"
+        android:textColor="@color/white"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        app:layout_constraintBottom_toTopOf="@id/focusDialStrip"
+        app:layout_constraintStart_toStartOf="@id/focusDialStrip"
+        app:layout_constraintEnd_toEndOf="@id/focusDialStrip" />
 
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
+    <!-- Vertical Focus Dial -->
+    <com.pixellog.ui.DialStripView
+        android:id="@+id/focusDialStrip"
+        android:layout_width="51dp"
+        android:layout_height="224dp"
+        android:layout_marginStart="13dp"
+        app:layout_constraintBottom_toBottomOf="@id/panelLensSelector"
+        app:layout_constraintStart_toEndOf="@id/panelLensSelector"
+        app:layout_constraintTop_toTopOf="@id/panelLensSelector" />
 
-            <Button
-                android:id="@+id/btnToggleLut"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginEnd="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="LUT: Rec.709 ON"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
+    <!-- Record Button (large circular button on the right) -->
+    <View
+        android:id="@+id/btnRecord"
+        android:layout_width="75dp"
+        android:layout_height="75dp"
+        android:layout_marginStart="49dp"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/bg_record_button"
+        android:contentDescription="@string/content_desc_record"
+        app:layout_constraintBottom_toBottomOf="@id/focusDialStrip"
+        app:layout_constraintStart_toEndOf="@id/focusDialStrip"
+        app:layout_constraintTop_toTopOf="@id/focusDialStrip" />
 
-            <Button
-                android:id="@+id/btnLogCurve"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginEnd="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="CURVE: PIXEL-LOG"
-                android:textColor="#00E5FF"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnFramerate"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginEnd="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="FPS: 30"
-                android:textColor="#76FF03"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnCodec"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginEnd="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="CODEC: HEVC"
-                android:textColor="#FFD600"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnBitrate"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="140 MBPS"
-                android:textColor="#FF6D00"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnTorch"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="TORCH: OFF"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnMic"
-                android:layout_width="wrap_content"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:background="#C0202020"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="MIC: AUTO (INT)"
-                android:textColor="#00E5FF"
-                android:textSize="11sp" />
-        </LinearLayout>
-    </HorizontalScrollView>
-
-    <!-- Audio VU Level Meter Panel -->
-    <LinearLayout
-        android:id="@+id/panelAudioMeter"
-        android:layout_width="170dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="8dp"
-        android:layout_marginTop="8dp"
-        android:background="#99111111"
-        android:orientation="vertical"
-        android:padding="6dp"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/quickControlsBar">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="38dp"
-                android:layout_height="wrap_content"
-                android:text="CH1 L"
-                android:textColor="#AAAAAA"
-                android:textSize="9sp" />
-
-            <ProgressBar
-                android:id="@+id/progressAudioL"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="0dp"
-                android:layout_height="6dp"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="0"
-                android:progressTint="#76FF03" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="3dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="38dp"
-                android:layout_height="wrap_content"
-                android:text="CH2 R"
-                android:textColor="#AAAAAA"
-                android:textSize="9sp" />
-
-            <ProgressBar
-                android:id="@+id/progressAudioR"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="0dp"
-                android:layout_height="6dp"
-                android:layout_weight="1"
-                android:max="100"
-                android:progress="0"
-                android:progressTint="#76FF03" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/textAudioDbfs"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="48kHz 16b | -inf dB"
-            android:textAlignment="viewEnd"
-            android:textColor="#76FF03"
-            android:textSize="9sp" />
-    </LinearLayout>
-
-    <!-- Lens Zoom Selector Bar (0.5x, 1x, 2x, 5x, 10x) -->
-    <LinearLayout
-        android:id="@+id/panelLensSelector"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="12dp"
-        android:background="#B3181818"
-        android:orientation="horizontal"
-        android:padding="3dp"
-        app:layout_constraintBottom_toTopOf="@id/panelManualControls"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <Button
-            android:id="@+id/btnLens05x"
-            android:layout_width="56dp"
-            android:layout_height="40dp"
-            android:background="#333333"
-            android:text="0.5x\n12mm"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btnLens1x"
-            android:layout_width="56dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="4dp"
-            android:background="#00E5FF"
-            android:text="1x\n24mm"
-            android:textAllCaps="false"
-            android:textColor="#000000"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btnLens2x"
-            android:layout_width="56dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="4dp"
-            android:background="#333333"
-            android:text="2x\n48mm"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btnLens5x"
-            android:layout_width="56dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="4dp"
-            android:background="#333333"
-            android:text="5x\n120mm"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/btnLens10x"
-            android:layout_width="56dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="4dp"
-            android:background="#333333"
-            android:text="10x\n240mm"
-            android:textAllCaps="false"
-            android:textColor="#FFFFFF"
-            android:textSize="10sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Manual Controls Panel -->
-    <LinearLayout
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- BOTTOM CONTROLS: Manual dial + Parameter tabs  -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <androidx.constraintlayout.widget.ConstraintLayout
         android:id="@+id/panelManualControls"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:background="#99000000"
-        android:orientation="vertical"
-        android:padding="12dp"
-        android:visibility="gone"
-        app:layout_constraintBottom_toTopOf="@id/bottomBar"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <!-- Shutter Row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/labelShutter"
-                android:layout_width="100dp"
-                android:layout_height="wrap_content"
-                android:text="SHUTTER: 180° (1/60s)"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
-
-            <SeekBar
-                android:id="@+id/seekShutter"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:max="360"
-                android:progress="180" />
-        </LinearLayout>
-
-        <!-- ISO Row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/labelIso"
-                android:layout_width="100dp"
-                android:layout_height="wrap_content"
-                android:text="ISO: 100 (LCG)"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
-
-            <SeekBar
-                android:id="@+id/seekIso"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:max="3200"
-                android:progress="100" />
-        </LinearLayout>
-
-        <!-- Kelvin & Tint Row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/labelKelvin"
-                android:layout_width="100dp"
-                android:layout_height="wrap_content"
-                android:text="WB: 5600K / 0"
-                android:textColor="#FFFFFF"
-                android:textSize="11sp" />
-
-            <SeekBar
-                android:id="@+id/seekKelvin"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:max="8000"
-                android:progress="3600" />
-
-            <SeekBar
-                android:id="@+id/seekTint"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:max="200"
-                android:progress="100" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- Bottom Controls Bar -->
-    <LinearLayout
-        android:id="@+id/bottomBar"
-        android:layout_width="0dp"
-        android:layout_height="80dp"
-        android:background="#B3000000"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp"
+        android:layout_marginBottom="8dp"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="24dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
+        app:layout_constraintStart_toEndOf="@id/viewfinderSurface">
 
-        <Button
-            android:id="@+id/btnModeSwitch"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:background="#333333"
-            android:text="MODE: AUTO"
-            android:textColor="#00E5FF"
-            android:textSize="12sp" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <!-- Record Button -->
-        <Button
-            android:id="@+id/btnRecord"
-            android:layout_width="64dp"
-            android:layout_height="64dp"
-            android:background="#FF1744"
-            android:text="REC"
-            android:textColor="#FFFFFF"
-            android:textStyle="bold" />
-
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <TextView
-            android:id="@+id/textBitrateStatus"
+        <!-- Current Value Label (e.g. "1/50") and DCG Mode Badge -->
+        <LinearLayout
+            android:id="@+id/dialValueContainer"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="HEVC 10-BIT\n140 Mbps VBR"
-            android:textAlignment="viewEnd"
-            android:textColor="#AAAAAA"
-            android:textSize="10sp" />
-    </LinearLayout>
+            android:layout_marginBottom="4dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            app:layout_constraintBottom_toTopOf="@id/dialRow"
+            app:layout_constraintEnd_toEndOf="@id/dialRow"
+            app:layout_constraintStart_toStartOf="@id/dialRow">
+
+            <TextView
+                android:id="@+id/textDialValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/gabarito"
+                android:gravity="center"
+                android:text="1/50"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <!-- DCG Mode Pill (Visible only for ISO tab) -->
+            <TextView
+                android:id="@+id/badgeDcg"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_dcg_badge_hcg"
+                android:fontFamily="@font/gabarito"
+                android:paddingStart="7dp"
+                android:paddingEnd="7dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:text="HCG"
+                android:textColor="@color/perf_cpu_orange"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Auto / Manual Mode Toggle ("A" default) -->
+        <TextView
+            android:id="@+id/btnAutoManualToggle"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:fontFamily="@font/gabarito"
+            android:gravity="center"
+            android:text="@string/label_auto"
+            android:textColor="@color/white"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            app:layout_constraintBottom_toBottomOf="@id/dialRow"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="@id/dialRow" />
+
+        <!-- Horizontal Dial Strip Row -->
+        <FrameLayout
+            android:id="@+id/dialRow"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginStart="12dp"
+            android:layout_marginBottom="6dp"
+            app:layout_constraintBottom_toTopOf="@id/paramTabBar"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@id/btnAutoManualToggle">
+
+            <com.pixellog.ui.DialStripView
+                android:id="@+id/dialStrip"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+        </FrameLayout>
+
+        <!-- Parameter Tab Bar (WB / SHUTTER / EV / ISO) with dynamic sizing -->
+        <LinearLayout
+            android:id="@+id/paramTabBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintEnd_toEndOf="@id/dialRow"
+            app:layout_constraintStart_toStartOf="@id/dialRow">
+
+            <TextView
+                android:id="@+id/tabWb"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:layout_marginEnd="12dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:fontFamily="@font/gabarito"
+                android:gravity="center"
+                android:text="@string/label_wb"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tabShutter"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:layout_marginEnd="12dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:background="@drawable/bg_param_pill_active"
+                android:fontFamily="@font/gabarito"
+                android:gravity="center"
+                android:text="@string/label_shutter"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tabEv"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:layout_marginEnd="12dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:fontFamily="@font/gabarito"
+                android:gravity="center"
+                android:text="@string/label_ev"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tabIso"
+                android:layout_width="wrap_content"
+                android:layout_height="28dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:fontFamily="@font/gabarito"
+                android:gravity="center"
+                android:text="@string/label_iso"
+                android:textColor="@color/white"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+    <!-- ═══════════════════════════════════════════════ -->
+    <!-- SETTINGS MODAL OVERLAY                         -->
+    <!-- ═══════════════════════════════════════════════ -->
+    <FrameLayout
+        android:id="@+id/settingsModalOverlay"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- Semi-transparent backdrop -->
+        <View
+            android:id="@+id/settingsBackdrop"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#40000000" />
+
+        <!-- Settings Card -->
+        <LinearLayout
+            android:id="@+id/settingsCard"
+            android:layout_width="380dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_settings_modal"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <!-- Title -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="24dp"
+                android:fontFamily="@font/gabarito"
+                android:text="@string/label_settings"
+                android:textColor="@color/white"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <!-- FPS + Bitrate + Codec Row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- FPS -->
+                <LinearLayout
+                    android:id="@+id/settingsFpsGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_fps"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsFps"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="24"
+                        android:textColor="@color/white"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- MBPS -->
+                <LinearLayout
+                    android:id="@+id/settingsBitrateGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_mbps"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsMbps"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="140"
+                        android:textColor="@color/white"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Codec -->
+                <LinearLayout
+                    android:id="@+id/settingsCodecGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="CODEC"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsCodec"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:gravity="center"
+                        android:text="@string/label_hevc"
+                        android:textColor="@color/white"
+                        android:textSize="20sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Row 2: Cinema Processing & Hardware (Curve, LUT, Torch, Mic) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- Curve -->
+                <LinearLayout
+                    android:id="@+id/settingsCurveGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1.2"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_curve"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsCurve"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="PIXEL-LOG"
+                        android:textColor="@color/cyan_accent"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- LUT Preview -->
+                <LinearLayout
+                    android:id="@+id/settingsLutGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_lut"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsLut"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="REC.709"
+                        android:textColor="@color/white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Torch -->
+                <LinearLayout
+                    android:id="@+id/settingsTorchGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="0.8"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_torch"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsTorch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="OFF"
+                        android:textColor="@color/white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Mic -->
+                <LinearLayout
+                    android:id="@+id/settingsMicGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_mic"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsMic"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="AUTO"
+                        android:textColor="@color/cyan_accent"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Row 3: Signal & Color Export (Signal Tag, Bake LUT, Import LUT) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- Metadata Signal Tag (LOG / HLG) -->
+                <LinearLayout
+                    android:id="@+id/settingsTransferGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_transfer"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsTransfer"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="LOG"
+                        android:textColor="@color/cyan_accent"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Bake LUT -->
+                <LinearLayout
+                    android:id="@+id/settingsBakeLutGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_bake_lut"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsBakeLut"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="OFF"
+                        android:textColor="@color/white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Metadata Sidecar JSON Toggle -->
+                <LinearLayout
+                    android:id="@+id/settingsSidecarGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_sidecar"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsSidecar"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="OFF"
+                        android:textColor="@color/white"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Import Custom .cube LUT -->
+                <LinearLayout
+                    android:id="@+id/settingsImportLutGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_import_lut"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsImportLut"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="+ CUBE"
+                        android:textColor="@color/cyan_accent"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Row 4: Stabilization Mode -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/settingsStabGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_stabilization"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsStab"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="OIS"
+                        android:textColor="@color/cyan_accent"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Resolution Badge (bottom of card) -->
+            <TextView
+                android:id="@+id/textSettingsResolution"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:background="@drawable/bg_resolution_badge"
+                android:fontFamily="@font/gabarito"
+                android:paddingStart="16dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="6dp"
+                android:text="4080 × 3064"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </FrameLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
