@@ -1149,6 +1149,7 @@ class CameraController(
                 val evFloat = evComp * (evStep?.toFloat() ?: 0.5f)
 
                 // AF State monitoring
+                // physResult is correct here: AF is per-physical-camera on Pixel HAL.
                 val afState = physResult.get(CaptureResult.CONTROL_AF_STATE)
                 if (afState != null && currentAfState == AfState.SCANNING) {
                     when (afState) {
@@ -1164,10 +1165,20 @@ class CameraController(
                 }
 
                 // AE State monitoring
-                val aeState = physResult.get(CaptureResult.CONTROL_AE_STATE)
+                // IMPORTANT: CONTROL_AE_STATE is a LOGICAL camera result on Pixel HAL.
+                // Physical camera sub-results do not carry it → always null from physResult.
+                // Read from the top-level TotalCaptureResult and fall back to physResult
+                // only as a last resort (e.g. single-camera devices where physResult == result).
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                    ?: physResult.get(CaptureResult.CONTROL_AE_STATE)
                 if (aeState != null && currentAeState == AeState.METERING) {
                     when (aeState) {
+                        // Lock as soon as the HAL reports a stable exposure.
+                        // CONVERGED  : AE has settled to the metering target.
+                        // LOCKED     : HAL accepted a prior lock command (fast path on some devices).
+                        // FLASH_REQUIRED: AE converged but needs flash; honour lock in either case.
                         CaptureResult.CONTROL_AE_STATE_CONVERGED,
+                        CaptureResult.CONTROL_AE_STATE_LOCKED,
                         CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED -> {
                             currentAeState = AeState.CONVERGED
                             onAeStateChanged?.invoke(AeState.CONVERGED)
@@ -1179,6 +1190,9 @@ class CameraController(
                                 cameraHandler?.post { applyStateAndRepeat() }
                             }
                         }
+                        // While actively searching, keep waiting — don't lock prematurely.
+                        CaptureResult.CONTROL_AE_STATE_SEARCHING,
+                        CaptureResult.CONTROL_AE_STATE_PRECAPTURE -> { /* still metering */ }
                     }
                 }
 
