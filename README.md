@@ -14,11 +14,15 @@
 
 * **True 4:3 Open-Gate Ingestion:** Reads the uncropped active sensor matrix ($4080 \times 3072$ at 30 fps or $3840 \times 2880$ for exact Mod-64 HEVC CTU compliance) using hardware quad-binned `RAW_SENSOR`, preserving 100% field of view without anamorphic crop factor.
 * **Preserved Dual Conversion Gain (DCG):** Automatically tracks the sensor's hardware floating-diffusion capacitor transitions (LCG at ISO 50–320 for 40,000 $e^-$ full-well capacity and 12.8 stops DR; HCG at ISO 400+ for 60% read noise reduction and 12.5 stops DR).
-* **Bespoke "Pixel-Log" Curve**: Replaces piecewise Apple Log with a branchless Inverse Hyperbolic Sine transfer function. Delivers a **55.5% reduction in GPU ALU instruction load**, eliminates SIMD warp divergence on mobile TBDR GPUs, maps 18% middle grey to cinema standard 0.4000 (code 410), and preserves +6.47 stops of highlight headroom up to $R = 16.0$ (14.2 stops total DR).
+* **Bespoke "Pixel-Log" Curve ($\sinh^{-1}$):** Replaces piecewise Apple Log with a branchless Inverse Hyperbolic Sine transfer function. Delivers a **55.5% reduction in GPU ALU instruction load**, eliminates SIMD warp divergence on mobile TBDR GPUs, maps 18% middle grey to cinema standard 0.4000 (code 410), and preserves +6.47 stops of highlight headroom up to $R = 16.0$ (14.2 stops total DR).
 * **Bradford-Adapted Color Matrix:** Pre-multiplies sensor spectral sensitivities into standard linear BT.2020 before log compression, permanently eliminating skin-tone hue twisting and metameric failure under narrow-band spectra.
-* **Dual-Surface Zero-Stall Rendering:** Multi-threaded shared EGL contexts eliminate `eglMakeCurrent` stalls (saving 1–5 ms/frame), simultaneously routing clean 10-bit Log to `MediaCodec` and a 33×33×33 3D LUT graded preview to the viewfinder `SurfaceView`.
+* **Dual-Surface Zero-Stall Rendering:** Multi-threaded shared EGL contexts eliminate `eglMakeCurrent` stalls (saving 1–5 ms/frame), simultaneously routing clean 10-bit Log to `MediaCodec` and a graded preview to the viewfinder `SurfaceView`.
+* **LUT Bake-to-Encoder:** Optional GPU Pass 2 mode burns the active 3D LUT directly into the 10-bit recording stream with automatic color space signaling — SDR LUTs tag `BT.709 / SDR`, AgX HLG tags `BT.2020 / HLG` for native HDR playback up to 1000 nits.
 * **Hardware Synchronization:** Non-blocking Linux sync fences (`EGL_SYNC_NATIVE_FENCE_ANDROID`) paired with `AImageReader_acquireNextImageAsync` and `AImage_deleteAsync`, maintaining a strictly regulated 3-buffer circular pool with 33.33 ms cadence and zero race conditions.
-* **Hardened 10-Bit HEVC Bitstream:** Tags the MP4 container with BT.2020 metadata (`KEY_COLOR_STANDARD = 6`, `KEY_COLOR_RANGE = 2`, `KEY_COLOR_TRANSFER = 3`), locks $PTS == DTS$ with zero B-frames to prevent `MediaMuxer` crashes, and prevents Adobe Premiere Pro's black-crush bug.
+* **Hardened 10-Bit HEVC / AV1 Bitstream:** Tags the MP4 container with BT.2020 metadata (`KEY_COLOR_STANDARD`, `KEY_COLOR_RANGE`, `KEY_COLOR_TRANSFER`), locks $PTS == DTS$ with zero B-frames to prevent `MediaMuxer` crashes, and prevents Adobe Premiere Pro's black-crush bug.
+* **Multi-Lens Switching:** Seamlessly routes between physical 0.5×, 1×, and 5× sensors (12 mm / 24 mm / 120 mm equiv.) with per-lens DCG and OIS capability flags, per-camera calibration matrix caching, and dynamic FPS range validation against `CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES`.
+* **Stabilization Modes:** OFF / OIS / EIS / FULL hybrid — EIS and FULL automatically crop the active sensor area to 3468×2600 to accommodate the electronic rolling-shutter correction margin.
+* **JSON Sidecar Metadata:** Frame-accurate `.json` written alongside each clip containing lens, ISO, shutter, Kelvin/tint, dynamic black/white levels, color matrices, and PixelLog curve parameters for reproducible post-production.
 
 ---
 
@@ -52,40 +56,63 @@ PixelLog/
 │       ├── AndroidManifest.xml               # Permissions, camera features, landscape lock
 │       ├── assets/
 │       │   ├── luts/
-│       │   │   └── PixelLog_to_Rec709_Display.cube   # 33x33x33 preview LUT in assets
+│       │   │   ├── PixelLog_to_Rec709_Display.cube   # 33x33x33 preview LUT (SDR)
+│       │   │   ├── PixelLog_to_Rec2020_Linear.cube   # Scene-linear BT.2020
+│       │   │   ├── PixelLog_to_ACEScg.cube           # ACEScg gamut
+│       │   │   ├── PixelLog_to_AgX_Base.cube         # AgX Film (neutral)
+│       │   │   ├── PixelLog_to_AgX_Punchy.cube       # AgX Film (punchy)
+│       │   │   ├── PixelLog_to_AgX_HLG.cube          # AgX HLG HDR (BT.2020/HLG)
+│       │   │   ├── PixelLog_to_AgX_Punchy_HLG.cube   # AgX Punchy HLG HDR
+│       │   │   └── PixelLog_to_DWG_Intermediate.cube # DaVinci Wide Gamut
 │       │   └── shaders/
 │       │       ├── debayer_pixel_log.vert    # Fullscreen quad vertex shader
 │       │       ├── debayer_pixel_log.frag    # 3x3 directional debayer + Pixel-Log OETF
 │       │       ├── lut3d_preview.vert        # Viewfinder vertex shader
-│       │       └── lut3d_preview.frag        # 3D LUT sampling with half-texel offset
+│       │       └── lut3d_preview.frag        # 3D LUT sampling (dynamic LUT size)
 │       ├── cpp/
 │       │   ├── CMakeLists.txt                # NDK CMake script linking GLESv3, EGL, camera2ndk
 │       │   ├── include/PixelLogCommon.h      # Common constants, Bayer enums, metadata structs
 │       │   ├── ZeroCopyImporter.h/.cpp       # AHardwareBuffer / DMA-BUF zero-copy importer
-│       │   ├── LutManager.h/.cpp             # 33x33x33 .cube parser & GL_TEXTURE_3D manager
+│       │   ├── LutManager.h/.cpp             # .cube parser & GL_TEXTURE_3D manager
 │       │   ├── GpuPipeline.h/.cpp            # Dual-surface EGL, FBO, debayer & LUT shaders
 │       │   ├── CameraStreamManager.h/.cpp    # AImageReader async acquire/release fence engine
 │       │   └── pixellog_jni.cpp              # JNI boundary implementations
 │       ├── java/com/pixellog/
 │       │   ├── camera/
-│       │   │   ├── CameraController.kt       # Camera2 HAL state machine (Auto vs Full Manual)
+│       │   │   ├── CameraController.kt       # Camera2 HAL state machine (multi-lens, stab, AE)
 │       │   │   └── ColorScienceUtils.kt      # Planckian CCT, UCS Tint, Bradford matrix
 │       │   ├── nativebridge/
 │       │   │   └── PixelLogEngine.kt         # JNI bridge to libpixellog.so
 │       │   ├── recording/
-│       │   │   ├── PixelLogEncoderPipeline.kt# 10-bit HEVC encoder, VUI metadata, MP4 muxing
-│       │   │   └── HevcBitstreamAuditor.kt   # SPS VUI NAL unit verification
+│       │   │   ├── PixelLogEncoderPipeline.kt# 10-bit HEVC/AV1 encoder, dynamic VUI, MP4 muxing
+│       │   │   ├── HevcBitstreamAuditor.kt   # SPS VUI NAL unit verification
+│       │   │   └── Av1BitstreamAuditor.kt    # AV1 sequence header verification
 │       │   └── ui/
-│       │       └── CameraActivity.kt         # UI: 4:3 viewfinder, shutter/ISO/Kelvin controls
-│       └── res/                              # Layout, colors, strings, themes
+│       │       ├── CameraActivity.kt         # Cinema-style UI (dial strip, lens pill, perf bars)
+│       │       ├── CameraPreferences.kt      # SharedPreferences wrapper
+│       │       ├── DialStripView.kt          # Horizontal manual-control dial strip
+│       │       ├── FocusExposureOverlayView.kt # Touch-to-focus/meter overlay
+│       │       ├── PerformanceBarsView.kt    # CPU/RAM/GPU performance bars
+│       │       └── PerformanceMonitor.kt     # System resource polling
+│       └── res/                              # Layout, drawables, fonts, colors, strings
 ├── post_production/
 │   ├── PixelLog_Transform.dctl               # Production DaVinci Resolve DCTL transform
-│   ├── generate_pixel_log_luts.py            # Python generator for 33x33x33 .cube LUTs
-│   ├── PixelLog_to_Rec709_Display.cube       # 33x33x33 display tone-mapped Rec.709 LUT
-│   └── PixelLog_to_Rec2020_Linear.cube       # 33x33x33 unclipped scene-linear LUT
+│   ├── PixelLog_Inverse.dctl                 # Inverse DCTL (Log → Linear round-trip)
+│   ├── generate_pixel_log_luts.py            # Python generator for all .cube LUTs
+│   ├── PixelLog_to_Rec709_Display_33/65.cube # Display Rec.709 (33 & 65 pt)
+│   ├── PixelLog_to_Rec2020_Linear_33/65.cube # Scene-linear BT.2020 (33 & 65 pt)
+│   ├── PixelLog_to_ACEScg_33/65.cube         # ACEScg (33 & 65 pt)
+│   ├── PixelLog_to_AgX_Rec709_33/65.cube     # AgX Film Rec.709 (33 & 65 pt)
+│   ├── PixelLog_to_AgX_Punchy_33/65.cube     # AgX Punchy (33 & 65 pt)
+│   ├── PixelLog_to_AgX_HLG_33/65.cube        # AgX HLG HDR (33 & 65 pt)
+│   ├── PixelLog_to_AgX_Punchy_HLG_33/65.cube # AgX Punchy HLG HDR (33 & 65 pt)
+│   └── PixelLog_to_DWG_Intermediate_33/65.cube # DaVinci Wide Gamut (33 & 65 pt)
 ├── tests/
 │   ├── test_color_science.py                 # Python verification test harness
 │   └── test_native_math.cpp                  # C++ FP32 math precision test harness
+├── tools/
+│   ├── make_luts.py                          # Standalone LUT generation tool
+│   └── solve_log.py                          # Log curve solver / optimizer
 ├── build.gradle.kts                          # Root build script
 ├── settings.gradle.kts                       # Project settings
 └── gradle.properties                         # Build properties

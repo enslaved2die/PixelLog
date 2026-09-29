@@ -10,6 +10,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.hardware.camera2.CameraMetadata
+import android.media.MediaFormat
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Bundle
@@ -115,6 +116,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             PixelLogEncoderPipeline.ColorTransferMode.SDR_LOG
                         }
                         prefs.colorTransfer = currentColorTransfer
+                        reloadCurrentLut()
                         updateSettingsDisplay()
                     }
                 }
@@ -124,6 +126,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         isBakeLutActive = enabled
                         prefs.isBakeLutActive = enabled
                         engine.setBakeLutToEncoder(enabled)
+                        reloadCurrentLut()
                         updateSettingsDisplay()
                     }
                 }
@@ -222,7 +225,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val id: String,
         val displayName: String,
         val assetPath: String? = null,
-        val file: File? = null
+        val file: File? = null,
+        val targetColorStandard: Int = MediaFormat.COLOR_STANDARD_BT709,
+        val targetColorTransfer: Int = MediaFormat.COLOR_TRANSFER_SDR_VIDEO
     )
     private val lutCatalog = mutableListOf<LutItem>()
     private var currentLutIndex = 0
@@ -394,7 +399,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // Default shutter speed to 180° for the new framerate
         val shutter180Idx = get180ShutterIndexForFramerate(config)
         currentShutterIndex = shutter180Idx
-        prefs.shutterIndex = currentShutterIndex
         val speed = shutterSpeeds[currentShutterIndex]
         val shutterNs = (1_000_000_000L / speed).coerceAtLeast(100_000L)
         cameraController.targetShutterNs = shutterNs
@@ -423,31 +427,27 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         isSidecarEnabled = prefs.isSidecarEnabled
         currentLogCurveType = prefs.logCurveType
         
+        // Camera controls (Focus, Shutter, WB, EV, ISO) start fresh in Auto mode on app start
         val default180Idx = get180ShutterIndexForFramerate(prefs.framerate)
-        val savedShutterIdx = prefs.shutterIndex
-        currentShutterIndex = if (prefs.isShutterAuto || savedShutterIdx !in shutterSpeeds.indices) {
-            default180Idx
-        } else {
-            savedShutterIdx
-        }
-        currentIsoIndex = prefs.isoIndex.coerceIn(0, isoValues.size - 1)
-        currentEvIndex = prefs.evIndex.coerceIn(0, evValues.size - 1)
-        currentWbIndex = prefs.wbIndex.coerceIn(0, wbValues.size - 1)
-        isFocusAuto = prefs.isFocusAuto
+        currentShutterIndex = default180Idx
+        currentIsoIndex = 2      // ISO 100
+        currentEvIndex = 8       // EV 0
+        currentWbIndex = 8       // 5600K
+        isFocusAuto = true
 
-        // Seed CameraController with persisted configuration
-        cameraController.setInitialLensAndFramerate(prefs.lens, prefs.framerate)
-        cameraController.isShutterAuto = prefs.isShutterAuto
-        cameraController.isIsoAuto = prefs.isIsoAuto
-        cameraController.isWbAuto = prefs.isWbAuto
-        cameraController.isFocusAuto = prefs.isFocusAuto
+        // Seed CameraController with main sensor (1x), persisted settings, and fresh auto controls
+        cameraController.setInitialLensAndFramerate(CameraController.LensZoom.WIDE_1X, prefs.framerate)
+        cameraController.isShutterAuto = true
+        cameraController.isIsoAuto = true
+        cameraController.isWbAuto = true
+        cameraController.isFocusAuto = true
 
         val initialSpeed = shutterSpeeds[currentShutterIndex]
         cameraController.targetShutterNs = (1_000_000_000L / initialSpeed).coerceAtLeast(100_000L)
         cameraController.targetIso = isoValues[currentIsoIndex]
         cameraController.targetKelvin = wbValues[currentWbIndex]
         cameraController.targetEvCompensation = (evValues[currentEvIndex] * 2).roundToInt()
-        cameraController.targetFocusDiopter = prefs.focusDiopter
+        cameraController.targetFocusDiopter = 0.0f
         cameraController.setStabilization(prefs.stabilizationMode)
 
         bindViews()
@@ -593,12 +593,24 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun refreshLutCatalog() {
         lutCatalog.clear()
         // Built-in calibrated technical 3D LUTs
-        lutCatalog.add(LutItem("rec709", "REC.709", assetPath = "luts/PixelLog_to_Rec709_Display.cube"))
-        lutCatalog.add(LutItem("agx_base", "AGX FILM", assetPath = "luts/PixelLog_to_AgX_Base.cube"))
-        lutCatalog.add(LutItem("agx_punchy", "AGX PUNCH", assetPath = "luts/PixelLog_to_AgX_Punchy.cube"))
-        lutCatalog.add(LutItem("dwg", "DWG", assetPath = "luts/PixelLog_to_DWG_Intermediate.cube"))
-        lutCatalog.add(LutItem("acescg", "ACEScg", assetPath = "luts/PixelLog_to_ACEScg.cube"))
-        lutCatalog.add(LutItem("linear", "LINEAR", assetPath = "luts/PixelLog_to_Rec2020_Linear.cube"))
+        lutCatalog.add(LutItem("rec709", "REC.709", assetPath = "luts/PixelLog_to_Rec709_Display.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT709,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
+        lutCatalog.add(LutItem("agx_base", "AGX FILM", assetPath = "luts/PixelLog_to_AgX_Base.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT709,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
+        lutCatalog.add(LutItem("agx_punchy", "AGX PUNCH", assetPath = "luts/PixelLog_to_AgX_Punchy.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT709,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
+        lutCatalog.add(LutItem("dwg", "DWG", assetPath = "luts/PixelLog_to_DWG_Intermediate.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
+        lutCatalog.add(LutItem("acescg", "ACEScg", assetPath = "luts/PixelLog_to_ACEScg.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_LINEAR))
+        lutCatalog.add(LutItem("linear", "LINEAR", assetPath = "luts/PixelLog_to_Rec2020_Linear.cube",
+            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
+            targetColorTransfer = MediaFormat.COLOR_TRANSFER_LINEAR))
 
         // Imported custom .cube files from app private directory
         val lutsDir = File(filesDir, "luts")
@@ -613,11 +625,64 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         lutCatalog.add(LutItem("clean", "CLEAN"))
     }
 
+    /**
+     * Resolves active LUT variant: When HLG mode and Bake-in are selected,
+     * AGX Film and AGX Punchy automatically switch to their dedicated calibrated
+     * AGX HLG and AGX Punchy HLG HDR 3D LUTs (BT.2020 + HLG transfer).
+     */
+    private fun getEffectiveLutItem(item: LutItem?): LutItem? {
+        if (item == null) return null
+        if (isBakeLutActive && currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.HLG) {
+            when (item.id) {
+                "agx_base" -> return item.copy(
+                    displayName = "AGX HLG",
+                    assetPath = "luts/PixelLog_to_AgX_HLG.cube",
+                    targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
+                    targetColorTransfer = MediaFormat.COLOR_TRANSFER_HLG
+                )
+                "agx_punchy" -> return item.copy(
+                    displayName = "AGX PUNCH HLG",
+                    assetPath = "luts/PixelLog_to_AgX_Punchy_HLG.cube",
+                    targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
+                    targetColorTransfer = MediaFormat.COLOR_TRANSFER_HLG
+                )
+            }
+        }
+        return item
+    }
+
+    private fun reloadCurrentLut() {
+        if (lutCatalog.isEmpty()) return
+        val rawItem = lutCatalog.getOrNull(currentLutIndex) ?: return
+        val item = getEffectiveLutItem(rawItem) ?: rawItem
+        if (item.id == "clean" || !isLutActive) {
+            engine.setLutEnabled(false)
+            performanceMonitor?.isLutEnabled = false
+        } else {
+            try {
+                val bytes = if (item.assetPath != null) {
+                    assets.open(item.assetPath).use { it.readBytes() }
+                } else if (item.file != null && item.file.exists()) {
+                    item.file.readBytes()
+                } else null
+
+                if (bytes != null) {
+                    engine.loadDisplayLut(bytes)
+                    engine.setLutEnabled(true)
+                    performanceMonitor?.isLutEnabled = true
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to reload LUT ${item.displayName}", e)
+            }
+        }
+    }
+
     private fun selectLut(index: Int) {
         if (lutCatalog.isEmpty()) return
         currentLutIndex = (index % lutCatalog.size + lutCatalog.size) % lutCatalog.size
-        val item = lutCatalog[currentLutIndex]
-        prefs.selectedLutId = item.id
+        val rawItem = lutCatalog[currentLutIndex]
+        prefs.selectedLutId = rawItem.id
+        val item = getEffectiveLutItem(rawItem) ?: rawItem
 
         if (item.id == "clean") {
             isLutActive = false
@@ -682,7 +747,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             return
         }
         cameraController.setLensZoom(lens)
-        prefs.lens = lens
         updateLensButtonsUi(lens)
         updateStabilizationSwitchesUi()
         updateSettingsDisplay()
@@ -787,8 +851,18 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val codecTag = if (currentCodec == PixelLogEncoderPipeline.VideoCodec.AV1) "AV1" else "HEVC"
-            val transferTag = if (currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.HLG) "HLG" else "LOG"
-            val bakeTag = if (isBakeLutActive) "BAKED" else "RAW"
+            val rawLutItem = lutCatalog.getOrNull(currentLutIndex)
+            val activeLutItem = getEffectiveLutItem(rawLutItem)
+            val isBakeValid = isBakeLutActive && activeLutItem != null && activeLutItem.id != "clean"
+            val bakedStd = activeLutItem?.targetColorStandard ?: MediaFormat.COLOR_STANDARD_BT709
+            val bakedTransfer = activeLutItem?.targetColorTransfer ?: MediaFormat.COLOR_TRANSFER_SDR_VIDEO
+
+            val transferTag = if (isBakeValid) {
+                if (bakedTransfer == MediaFormat.COLOR_TRANSFER_HLG) "HLG" else "REC709"
+            } else {
+                if (currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.HLG) "HLG" else "LOG"
+            }
+            val bakeTag = if (isBakeValid) "BAKED" else "RAW"
             val file = File(pixDir, "PixelLog_${timestamp}_${codecTag}_${transferTag}_${bakeTag}_${currentBitratePreset.label.replace(" ", "")}.mp4")
 
             val (encWidth, encHeight) = PixelLogEncoderPipeline.getOptimalResolution(
@@ -805,10 +879,13 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 frameRate = cameraController.currentFramerate.fps.toInt(),
                 outputFile = file,
                 audioCapturePipeline = audioCapturePipeline,
-                colorTransfer = currentColorTransfer
+                colorTransfer = currentColorTransfer,
+                isLutBaked = isBakeValid,
+                bakedColorStandard = bakedStd,
+                bakedColorTransfer = bakedTransfer
             )
 
-            engine.setBakeLutToEncoder(isBakeLutActive)
+            engine.setBakeLutToEncoder(isBakeValid)
             val encoderSurface = encoderPipeline!!.prepare()
             engine.setEncoderSurface(encoderSurface)
             encoderPipeline!!.startRecording()
@@ -925,6 +1002,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 PixelLogEncoderPipeline.ColorTransferMode.SDR_LOG
             }
             prefs.colorTransfer = currentColorTransfer
+            reloadCurrentLut()
             updateSettingsDisplay()
         }
 
@@ -933,6 +1011,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             isBakeLutActive = !isBakeLutActive
             prefs.isBakeLutActive = isBakeLutActive
             engine.setBakeLutToEncoder(isBakeLutActive)
+            reloadCurrentLut()
             updateSettingsDisplay()
         }
 
@@ -990,7 +1069,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val curveNames = arrayOf("PIXEL-LOG", "S-LOG3", "APPLE LOG")
         textSettingsCurve.text = curveNames[currentLogCurveType.coerceIn(0, 2)]
 
-        val activeLutName = lutCatalog.getOrNull(currentLutIndex)?.displayName ?: if (isLutActive) "REC.709" else "CLEAN"
+        val rawLutItem = lutCatalog.getOrNull(currentLutIndex)
+        val effectiveLutItem = getEffectiveLutItem(rawLutItem)
+        val activeLutName = effectiveLutItem?.displayName ?: if (isLutActive) "REC.709" else "CLEAN"
         textSettingsLut.text = activeLutName
 
         // Signal transfer tag
@@ -1127,7 +1208,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 ParamTab.SHUTTER -> {
                     if (cameraController.isShutterAuto) {
                         cameraController.isShutterAuto = false
-                        prefs.isShutterAuto = false
                         updateAutoManualToggleForActiveTab()
                     }
                     // Manual shutter overrides AE lock — dismiss exposure reticle
@@ -1139,7 +1219,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 ParamTab.ISO -> {
                     if (cameraController.isIsoAuto) {
                         cameraController.isIsoAuto = false
-                        prefs.isIsoAuto = false
                         updateAutoManualToggleForActiveTab()
                     }
                     // Manual ISO overrides AE lock — dismiss exposure reticle
@@ -1151,7 +1230,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 ParamTab.WB -> {
                     if (cameraController.isWbAuto) {
                         cameraController.isWbAuto = false
-                        prefs.isWbAuto = false
                         updateAutoManualToggleForActiveTab()
                     }
                 }
@@ -1166,25 +1244,18 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 when (activeParamTab) {
                     ParamTab.SHUTTER -> {
                         currentShutterIndex = index.coerceIn(0, shutterSpeeds.size - 1)
-                        prefs.shutterIndex = currentShutterIndex
-                        prefs.isShutterAuto = false
                         applyShutterFromDial()
                     }
                     ParamTab.ISO -> {
                         currentIsoIndex = index.coerceIn(0, isoValues.size - 1)
-                        prefs.isoIndex = currentIsoIndex
-                        prefs.isIsoAuto = false
                         applyIsoFromDial()
                     }
                     ParamTab.EV -> {
                         currentEvIndex = index.coerceIn(0, evValues.size - 1)
-                        prefs.evIndex = currentEvIndex
                         cameraController.setEvCompensation((evValues[currentEvIndex] * 2).roundToInt())
                     }
                     ParamTab.WB -> {
                         currentWbIndex = index.coerceIn(0, wbValues.size - 1)
-                        prefs.wbIndex = currentWbIndex
-                        prefs.isWbAuto = false
                         applyWbFromDial()
                     }
                 }
@@ -1284,7 +1355,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun setupFocusDial() {
         focusDialStrip.dialOrientation = DialStripView.Orientation.VERTICAL
         focusDialStrip.setRange(0, 100, 50)
-        val initialFocusIndex = ((prefs.focusDiopter / 10f) * 100).roundToInt().coerceIn(0, 100)
+        val initialFocusIndex = ((cameraController.targetFocusDiopter / 10f) * 100).roundToInt().coerceIn(0, 100)
         focusDialStrip.setValue(initialFocusIndex)
         btnFocusMode.text = if (isFocusAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
 
@@ -1292,7 +1363,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             if (isFocusAuto) {
                 isFocusAuto = false
                 cameraController.isFocusAuto = false
-                prefs.isFocusAuto = false
                 btnFocusMode.text = getString(R.string.label_manual)
                 // Switching to manual focus dismisses the tap-to-focus reticle
                 focusExposureOverlay.dismissFocus()
@@ -1304,24 +1374,20 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (isFocusAuto) {
                     isFocusAuto = false
                     cameraController.isFocusAuto = false
-                    prefs.isFocusAuto = false
                     btnFocusMode.text = getString(R.string.label_manual)
                 }
                 val diopter = (index / 100f) * 10f  // 0..10 diopters
                 cameraController.setFocusDiopter(diopter)
-                prefs.focusDiopter = diopter
             }
         }
 
         btnFocusMode.setOnClickListener {
             isFocusAuto = !isFocusAuto
             cameraController.isFocusAuto = isFocusAuto
-            prefs.isFocusAuto = isFocusAuto
             btnFocusMode.text = if (isFocusAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
             if (!isFocusAuto) {
                 val diopter = (focusDialStrip.getCurrentIndex() / 100f) * 10f
                 cameraController.setFocusDiopter(diopter)
-                prefs.focusDiopter = diopter
             }
         }
     }
@@ -1348,15 +1414,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         // Switch to manual: default to 180° shutter for current framerate
                         val shutter180Idx = get180ShutterIndexForFramerate(cameraController.currentFramerate)
                         currentShutterIndex = shutter180Idx
-                        prefs.shutterIndex = currentShutterIndex
                         val speed = shutterSpeeds[currentShutterIndex]
                         val shutterNs = (1_000_000_000L / speed).coerceAtLeast(100_000L)
                         cameraController.setShutter(shutterNs, isAuto = false)
-                        prefs.isShutterAuto = false
                         dialStrip.setValue(currentShutterIndex)
                     } else {
                         cameraController.isShutterAuto = true
-                        prefs.isShutterAuto = true
                         cameraController.applySettings()
                     }
                 }
@@ -1365,11 +1428,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         // Switch to manual: seed target ISO from live ISO
                         val iso = isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
                         cameraController.setIso(iso, isAuto = false)
-                        prefs.isIsoAuto = false
-                        prefs.isoIndex = currentIsoIndex
                     } else {
                         cameraController.isIsoAuto = true
-                        prefs.isIsoAuto = true
                         cameraController.applySettings()
                     }
                 }
@@ -1378,11 +1438,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         // Switch to manual: seed target Kelvin from live estimated Kelvin
                         val kelvin = wbValues[currentWbIndex.coerceIn(0, wbValues.size - 1)]
                         cameraController.setWhiteBalance(kelvin, isAuto = false)
-                        prefs.isWbAuto = false
-                        prefs.wbIndex = currentWbIndex
                     } else {
                         cameraController.isWbAuto = true
-                        prefs.isWbAuto = true
                         cameraController.applySettings()
                     }
                 }
@@ -1391,7 +1448,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     cameraController.setEvCompensation(0)
                     val zeroIdx = evValues.indexOfFirst { it == 0f }.coerceAtLeast(0)
                     currentEvIndex = zeroIdx
-                    prefs.evIndex = zeroIdx
                     dialStrip.setCurrentIndex(zeroIdx)
                 }
             }
@@ -1461,7 +1517,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             // Ensure we're in AF-auto mode
             isFocusAuto = true
             cameraController.isFocusAuto = true
-            prefs.isFocusAuto = true
             btnFocusMode.text = getString(R.string.label_auto)
 
             cameraController.triggerTapToFocus(normX, normY) { afState ->
@@ -1487,7 +1542,17 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         CameraController.AeState.CONVERGED,
                         CameraController.AeState.LOCKED -> {
                             focusExposureOverlay.setExposureLocked(locked = true)
-                            // Sync live ISO/shutter dial label to reflect locked exposure
+                            // Sync live ISO/shutter dial positions and labels to reflect locked exposure
+                            val lockedShutter = cameraController.targetShutterNs
+                            val lockedIso = cameraController.targetIso
+                            if (lockedShutter > 0) {
+                                val speed = (1_000_000_000.0 / lockedShutter).roundToInt()
+                                val closestIdx = shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - speed) } ?: currentShutterIndex
+                                currentShutterIndex = closestIdx
+                            }
+                            val closestIsoIdx = isoValues.indices.minByOrNull { kotlin.math.abs(isoValues[it] - lockedIso) } ?: currentIsoIndex
+                            currentIsoIndex = closestIsoIdx
+                            updateAutoManualToggleForActiveTab()
                             updateDialValueLabel()
                         }
                         else -> { /* METERING or IDLE */ }
@@ -1499,6 +1564,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // Double tap → reset both AF and AE to full-scene continuous mode
         focusExposureOverlay.onResetAfAe = {
             cameraController.resetFocusAndExposure()
+            updateAutoManualToggleForActiveTab()
+            updateDialValueLabel()
         }
     }
 
@@ -1652,6 +1719,29 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             root.put("device_info", devObj)
 
+            val rawLutItem = lutCatalog.getOrNull(currentLutIndex)
+            val activeLutItem = getEffectiveLutItem(rawLutItem)
+            val isBakeValid = isBakeLutActive && activeLutItem != null && activeLutItem.id != "clean"
+            val standardStr = if (isBakeValid) {
+                if (activeLutItem?.targetColorStandard == MediaFormat.COLOR_STANDARD_BT2020) "BT.2020" else "BT.709"
+            } else {
+                "BT.2020"
+            }
+            val transferStr = if (isBakeValid) {
+                when (activeLutItem?.targetColorTransfer) {
+                    MediaFormat.COLOR_TRANSFER_HLG -> "ARIB STD-B67 / ITU-R BT.2100 HLG"
+                    MediaFormat.COLOR_TRANSFER_LINEAR -> "Scene-Linear (Unclipped)"
+                    else -> "ITU-R BT.709 (SDR)"
+                }
+            } else {
+                if (currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.HLG) "ARIB STD-B67 / ITU-R BT.2100 HLG" else LogParams.CURVE_NAME
+            }
+            val transferModeStr = if (isBakeValid) {
+                if (activeLutItem?.targetColorTransfer == MediaFormat.COLOR_TRANSFER_HLG) "HLG" else "SDR"
+            } else {
+                currentColorTransfer.label
+            }
+
             val vidObj = JSONObject().apply {
                 put("codec", currentCodec.displayName)
                 put("mime_type", currentCodec.mimeType)
@@ -1660,12 +1750,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 put("frame_rate", cameraController.currentFramerate.fps)
                 put("bitrate_preset", currentBitratePreset.label)
                 put("target_bitrate_bps", currentBitratePreset.targetBps)
-                put("color_standard", "BT.2020")
+                put("color_standard", standardStr)
                 put("color_range", "Limited (64-940 / 64-960)")
-                put("color_transfer", if (currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.HLG) "ARIB STD-B67 / ITU-R BT.2100 HLG" else LogParams.CURVE_NAME)
-                put("color_transfer_mode", currentColorTransfer.label)
-                put("lut_baked", isBakeLutActive)
-                put("active_lut", lutCatalog.getOrNull(currentLutIndex)?.displayName ?: if (isLutActive) "REC.709" else "CLEAN")
+                put("color_transfer", transferStr)
+                put("color_transfer_mode", transferModeStr)
+                put("lut_baked", isBakeValid)
+                put("active_lut", activeLutItem?.displayName ?: if (isLutActive) "REC.709" else "CLEAN")
                 put("bit_depth", 10)
             }
             root.put("video", vidObj)

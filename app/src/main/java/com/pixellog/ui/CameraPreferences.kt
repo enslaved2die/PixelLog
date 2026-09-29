@@ -18,7 +18,6 @@ class CameraPreferences(private val prefs: SharedPreferences) {
     companion object {
         const val PREFS_NAME = "pixellog_preferences"
 
-        const val KEY_LENS = "pref_lens"
         const val KEY_FRAMERATE = "pref_framerate"
         const val KEY_CODEC = "pref_codec"
         const val KEY_BITRATE_PRESET = "pref_bitrate_preset"
@@ -29,30 +28,38 @@ class CameraPreferences(private val prefs: SharedPreferences) {
         const val KEY_LOG_CURVE_TYPE = "pref_log_curve_type"
         const val KEY_SELECTED_LUT_ID = "pref_selected_lut_id"
 
-        const val KEY_SHUTTER_AUTO = "pref_shutter_auto"
-        const val KEY_ISO_AUTO = "pref_iso_auto"
-        const val KEY_WB_AUTO = "pref_wb_auto"
-        const val KEY_FOCUS_AUTO = "pref_focus_auto"
-
-        const val KEY_SHUTTER_INDEX = "pref_shutter_index"
-        const val KEY_ISO_INDEX = "pref_iso_index"
-        const val KEY_EV_INDEX = "pref_ev_index"
-        const val KEY_WB_INDEX = "pref_wb_index"
-        const val KEY_FOCUS_DIOPTER = "pref_focus_diopter"
-
         const val KEY_ACTIVE_PARAM_TAB = "pref_active_param_tab"
+
+        val LEGACY_CONTROL_KEYS = listOf(
+            "pref_lens",
+            "pref_shutter_auto",
+            "pref_iso_auto",
+            "pref_wb_auto",
+            "pref_focus_auto",
+            "pref_shutter_index",
+            "pref_iso_index",
+            "pref_ev_index",
+            "pref_wb_index",
+            "pref_focus_diopter"
+        )
     }
 
-    var lens: CameraController.LensZoom
-        get() {
-            val name = prefs.getString(KEY_LENS, CameraController.LensZoom.WIDE_1X.name)
-            return try {
-                CameraController.LensZoom.valueOf(name ?: CameraController.LensZoom.WIDE_1X.name)
-            } catch (_: Exception) {
-                CameraController.LensZoom.WIDE_1X
+    init {
+        // Camera controls (Focus, Shutter, WB, EV, ISO) and sensor/lens selection
+        // are session-only and must never be persisted across app restarts (app always
+        // defaults to the main 1x sensor on launch). Purge legacy keys if present.
+        val editor = prefs.edit()
+        var hasLegacy = false
+        for (key in LEGACY_CONTROL_KEYS) {
+            if (prefs.contains(key)) {
+                editor.remove(key)
+                hasLegacy = true
             }
         }
-        set(value) = prefs.edit().putString(KEY_LENS, value.name).apply()
+        if (hasLegacy) {
+            editor.apply()
+        }
+    }
 
     var framerate: CameraController.FramerateConfig
         get() {
@@ -130,42 +137,6 @@ class CameraPreferences(private val prefs: SharedPreferences) {
     var selectedLutId: String
         get() = prefs.getString(KEY_SELECTED_LUT_ID, "rec709") ?: "rec709"
         set(value) = prefs.edit().putString(KEY_SELECTED_LUT_ID, value).apply()
-
-    var isShutterAuto: Boolean
-        get() = prefs.getBoolean(KEY_SHUTTER_AUTO, true)
-        set(value) = prefs.edit().putBoolean(KEY_SHUTTER_AUTO, value).apply()
-
-    var isIsoAuto: Boolean
-        get() = prefs.getBoolean(KEY_ISO_AUTO, true)
-        set(value) = prefs.edit().putBoolean(KEY_ISO_AUTO, value).apply()
-
-    var isWbAuto: Boolean
-        get() = prefs.getBoolean(KEY_WB_AUTO, true)
-        set(value) = prefs.edit().putBoolean(KEY_WB_AUTO, value).apply()
-
-    var isFocusAuto: Boolean
-        get() = prefs.getBoolean(KEY_FOCUS_AUTO, true)
-        set(value) = prefs.edit().putBoolean(KEY_FOCUS_AUTO, value).apply()
-
-    var shutterIndex: Int
-        get() = prefs.getInt(KEY_SHUTTER_INDEX, 10)
-        set(value) = prefs.edit().putInt(KEY_SHUTTER_INDEX, value).apply()
-
-    var isoIndex: Int
-        get() = prefs.getInt(KEY_ISO_INDEX, 2)
-        set(value) = prefs.edit().putInt(KEY_ISO_INDEX, value).apply()
-
-    var evIndex: Int
-        get() = prefs.getInt(KEY_EV_INDEX, 8)
-        set(value) = prefs.edit().putInt(KEY_EV_INDEX, value).apply()
-
-    var wbIndex: Int
-        get() = prefs.getInt(KEY_WB_INDEX, 8)
-        set(value) = prefs.edit().putInt(KEY_WB_INDEX, value).apply()
-
-    var focusDiopter: Float
-        get() = prefs.getFloat(KEY_FOCUS_DIOPTER, 0.0f).coerceIn(0.0f, 10.0f)
-        set(value) = prefs.edit().putFloat(KEY_FOCUS_DIOPTER, value.coerceIn(0.0f, 10.0f)).apply()
 
     var activeParamTabName: String
         get() = prefs.getString(KEY_ACTIVE_PARAM_TAB, "SHUTTER") ?: "SHUTTER"

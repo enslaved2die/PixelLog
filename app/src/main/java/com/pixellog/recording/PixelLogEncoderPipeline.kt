@@ -33,7 +33,10 @@ class PixelLogEncoderPipeline(
     val peakBitrate: Int = bitratePreset.peakBps,
     val outputFile: File,
     val audioCapturePipeline: AudioCapturePipeline? = null,
-    val colorTransfer: ColorTransferMode = ColorTransferMode.SDR_LOG
+    val colorTransfer: ColorTransferMode = ColorTransferMode.SDR_LOG,
+    val isLutBaked: Boolean = false,
+    val bakedColorStandard: Int = MediaFormat.COLOR_STANDARD_BT709,
+    val bakedColorTransfer: Int = MediaFormat.COLOR_TRANSFER_SDR_VIDEO
 ) {
     companion object {
         private const val TAG = "PixelLogEncoder"
@@ -141,10 +144,15 @@ class PixelLogEncoderPipeline(
             }
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
 
-            // Bitstream Color Space Signaling (BT.2020 Primaries, Limited Range, SDR/HLG Transfer)
-            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
+            // Bitstream Color Space Signaling (BT.2020 Primaries for Log, BT.709/BT.2020 for Baked LUT)
+            val (effectiveStandard, effectiveTransfer) = if (isLutBaked) {
+                bakedColorStandard to bakedColorTransfer
+            } else {
+                MediaFormat.COLOR_STANDARD_BT2020 to colorTransfer.transferValue
+            }
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, effectiveStandard)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-            setInteger(MediaFormat.KEY_COLOR_TRANSFER, colorTransfer.transferValue)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, effectiveTransfer)
 
             // Bitrate & Rate Control
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)

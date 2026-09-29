@@ -399,6 +399,88 @@ def apply_agx_transform(lin_rec709, look="base"):
     out = mat33_mul_vec3(AGX_OUTSET_MATRIX, sig)
     return [max(min(c, 1.0), 0.0) for c in out]
 
+# ITU-R BT.2100 HLG Reference OETF constants
+HLG_A = 0.17883277
+HLG_B = 1.0 - 4.0 * HLG_A # 0.28466892
+HLG_C = 0.5 - HLG_A * math.log(4.0 * HLG_A) # 0.55991073
+
+def hlg_oetf(lin):
+    """ITU-R BT.2100 / ARIB STD-B67 Hybrid Log-Gamma OETF."""
+    if lin <= 0.0:
+        return 0.0
+    if lin <= 1.0 / 12.0:
+        return math.sqrt(3.0 * lin)
+    return HLG_A * math.log(12.0 * lin - HLG_B) + HLG_C
+
+def apply_agx_hlg_transform(lin_bt2020, look="base"):
+    """
+    Transforms Scene-Linear BT.2020 -> AgX Inset -> Tone Compression -> Outset -> BT.2100 HLG OETF.
+    Calibrated to ITU-R BT.2408 operational practices:
+    - 18% middle grey (0.18) -> 38% HLG code
+    - 100% diffuse white (1.0) -> 75% HLG code
+    - Specular dynamic range (+5.5 stops above 18%) -> gentle roll-off into 75%-100% HLG (1000 nits)
+    """
+    # 1. Inset Matrix (gamut compression & crosstalk in BT.2020)
+    val = mat33_mul_vec3(AGX_INSET_MATRIX, lin_bt2020)
+
+    # 2. Tone compression for HDR specular highlights above diffuse white (1.0)
+    # Scale factor 0.2674 places 18% grey at 0.380 HLG and diffuse white at 0.752 HLG
+    scale = 0.2674
+    out_sig = []
+    for comp in val:
+        c_clamped = max(comp, 0.0)
+        if c_clamped > 1.0:
+            excess = c_clamped - 1.0
+            # Asymptotic knee roll-off into peak 1000 nits headroom
+            c_mapped = 1.0 + (excess / (1.0 + excess / 2.74))
+        else:
+            c_mapped = c_clamped
+        hlg_in = min(max(c_mapped * scale, 0.0), 1.0)
+        out_sig.append(hlg_in)
+
+    # 3. Outset matrix (restores BT.2020 primaries)
+    restored = mat33_mul_vec3(AGX_OUTSET_MATRIX, out_sig)
+
+    # 4. Apply ITU-R BT.2100 HLG OETF
+    encoded = [min(max(hlg_oetf(x), 0.0), 1.0) for x in restored]
+
+    # 5. Optional Creative Look (Punchy) in BT.2020 HLG space
+    if look == "punchy":
+        lw = [0.2627, 0.6780, 0.0593]
+        y = sum(encoded[i] * lw[i] for i in range(3))
+        if y > 1e-6:
+            y_norm = y / 0.38
+            y_out = 0.38 * (y_norm ** 1.15) if y_norm <= 1.0 else 0.38 + (1.0 - 0.38) * (((y - 0.38) / (1.0 - 0.38)) ** 0.92)
+            gain = y_out / y
+            return [min(max(y_out + 1.25 * (encoded[i] * gain - y_out), 0.0), 1.0) for i in range(3)]
+
+    return encoded
+
+def write_3d_agx_hlg_lut(out_path, p, size=33, look="base"):
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    look_title = "Punchy" if look == "punchy" else "Base"
+    with open(out_path, "w") as f:
+        f.write(f"# PixelLog to AgX ({look_title}) HLG HDR (BT.2020) Display Transform 3D LUT\n")
+        f.write("# Target Device: Google Pixel 11 Pro Primary Sensor (Tensor G6)\n")
+        f.write("# Standard: ITU-R BT.2100 HLG / ITU-R BT.2408 HDR\n")
+        f.write("# Transform: Pixel-Log BT.2020 -> Scene-Linear -> AgX Inset -> HDR Shoulder -> Outset -> HLG OETF\n")
+        f.write(f"# Middle Grey (0.40 Log) -> 38.0% HLG | Diffuse White (1.0) -> 75.2% HLG | Highlights -> 96.0-100% HLG\n")
+        f.write(f"LUT_3D_SIZE {size}\n")
+        f.write("DOMAIN_MIN 0.0 0.0 0.0\n")
+        f.write("DOMAIN_MAX 1.0 1.0 1.0\n\n")
+
+        for b_idx in range(size):
+            pb = b_idx / (size - 1)
+            for g_idx in range(size):
+                pg = g_idx / (size - 1)
+                for r_idx in range(size):
+                    pr = r_idx / (size - 1)
+
+                    lin_bt2020 = [inv_log(pr, p), inv_log(pg, p), inv_log(pb, p)]
+                    out_rgb = apply_agx_hlg_transform(lin_bt2020, look=look)
+                    f.write(f"{out_rgb[0]:.6f} {out_rgb[1]:.6f} {out_rgb[2]:.6f}\n")
+    print(f"[make_luts] Generated AgX HLG HDR LUT ({look_title}, {size}x{size}x{size}): {out_path}")
+
 def write_3d_agx_lut(out_path, p, size=33, look="base"):
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     look_title = "Punchy" if look == "punchy" else "Base"
@@ -530,6 +612,8 @@ def main():
         write_3d_display_lut(os.path.join(post_dir, f"PixelLog_to_Rec709_Display_{size}.cube"), p, size)
         write_3d_agx_lut(os.path.join(post_dir, f"PixelLog_to_AgX_Rec709_{size}.cube"), p, size, look="base")
         write_3d_agx_lut(os.path.join(post_dir, f"PixelLog_to_AgX_Punchy_{size}.cube"), p, size, look="punchy")
+        write_3d_agx_hlg_lut(os.path.join(post_dir, f"PixelLog_to_AgX_HLG_{size}.cube"), p, size, look="base")
+        write_3d_agx_hlg_lut(os.path.join(post_dir, f"PixelLog_to_AgX_Punchy_HLG_{size}.cube"), p, size, look="punchy")
         write_3d_dwg_lut(os.path.join(post_dir, f"PixelLog_to_DWG_Intermediate_{size}.cube"), p, size)
         write_3d_acescg_lut(os.path.join(post_dir, f"PixelLog_to_ACEScg_{size}.cube"), p, size)
         write_3d_linear_lut(os.path.join(post_dir, f"PixelLog_to_Rec2020_Linear_{size}.cube"), p, size)
@@ -553,6 +637,8 @@ def main():
         ("PixelLog_to_Rec709_Display_33.cube", "PixelLog_to_Rec709_Display.cube"),
         ("PixelLog_to_AgX_Rec709_33.cube", "PixelLog_to_AgX_Base.cube"),
         ("PixelLog_to_AgX_Punchy_33.cube", "PixelLog_to_AgX_Punchy.cube"),
+        ("PixelLog_to_AgX_HLG_33.cube", "PixelLog_to_AgX_HLG.cube"),
+        ("PixelLog_to_AgX_Punchy_HLG_33.cube", "PixelLog_to_AgX_Punchy_HLG.cube"),
         ("PixelLog_to_DWG_Intermediate_33.cube", "PixelLog_to_DWG_Intermediate.cube"),
         ("PixelLog_to_ACEScg_33.cube", "PixelLog_to_ACEScg.cube"),
         ("PixelLog_to_Rec2020_Linear_33.cube", "PixelLog_to_Rec2020_Linear.cube"),

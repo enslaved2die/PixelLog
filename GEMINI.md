@@ -32,7 +32,7 @@
   return clamp((raw - bl) / max(wl - bl, 1e-6), 0.0, 1.0);
   ```
 * **Viewfinder Viewport:** Dynamically queried from `eglQuerySurface(EGL_WIDTH, EGL_HEIGHT)`
-* **Transfer Curve:** Branchless Pixel-Log ($\operatorname{asinh}$) with middle grey mapped to $0.4000$ (code 410)
+* **Transfer Curve:** Branchless Pixel-Log ($\sinh^{-1}$) with middle grey mapped to $0.4000$ (code 410)
 * **Fallback Pathway:** `AHardwareBuffer_lock` with `glTexImage2D(GL_LUMINANCE, GL_UNSIGNED_SHORT)` if `RAW16` `eglCreateImageKHR` is rejected by gralloc
 
 ## Android Deployment

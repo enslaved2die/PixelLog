@@ -20,7 +20,6 @@ class CameraPreferencesTest {
 
     @Test
     fun testDefaultValuesWhenUnset() {
-        assertEquals(CameraController.LensZoom.WIDE_1X, cameraPreferences.lens)
         assertEquals(CameraController.FramerateConfig.FPS_30, cameraPreferences.framerate)
         assertEquals(PixelLogEncoderPipeline.VideoCodec.HEVC, cameraPreferences.codec)
         assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_140, cameraPreferences.bitratePreset)
@@ -28,23 +27,11 @@ class CameraPreferencesTest {
         assertFalse(cameraPreferences.isBakeLutActive)
         assertEquals(0, cameraPreferences.logCurveType)
         assertEquals("rec709", cameraPreferences.selectedLutId)
-
-        assertTrue(cameraPreferences.isShutterAuto)
-        assertTrue(cameraPreferences.isIsoAuto)
-        assertTrue(cameraPreferences.isWbAuto)
-        assertTrue(cameraPreferences.isFocusAuto)
-
-        assertEquals(10, cameraPreferences.shutterIndex)
-        assertEquals(2, cameraPreferences.isoIndex)
-        assertEquals(8, cameraPreferences.evIndex)
-        assertEquals(8, cameraPreferences.wbIndex)
-        assertEquals(0.0f, cameraPreferences.focusDiopter, 1e-4f)
         assertEquals("SHUTTER", cameraPreferences.activeParamTabName)
     }
 
     @Test
-    fun testSavingAndRestoringAllParameters() {
-        cameraPreferences.lens = CameraController.LensZoom.TELE_5X
+    fun testSavingAndRestoringSettings() {
         cameraPreferences.framerate = CameraController.FramerateConfig.FPS_24
         cameraPreferences.codec = PixelLogEncoderPipeline.VideoCodec.AV1
         cameraPreferences.bitratePreset = PixelLogEncoderPipeline.BitratePreset.MBPS_180
@@ -52,23 +39,11 @@ class CameraPreferencesTest {
         cameraPreferences.isBakeLutActive = true
         cameraPreferences.logCurveType = 1
         cameraPreferences.selectedLutId = "dwg"
-
-        cameraPreferences.isShutterAuto = false
-        cameraPreferences.isIsoAuto = false
-        cameraPreferences.isWbAuto = false
-        cameraPreferences.isFocusAuto = false
-
-        cameraPreferences.shutterIndex = 10
-        cameraPreferences.isoIndex = 5
-        cameraPreferences.evIndex = 4
-        cameraPreferences.wbIndex = 12
-        cameraPreferences.focusDiopter = 3.5f
         cameraPreferences.activeParamTabName = "ISO"
 
         // Create new instance over the same SharedPreferences to simulate cold restart
         val restoredPrefs = CameraPreferences(fakePrefs)
 
-        assertEquals(CameraController.LensZoom.TELE_5X, restoredPrefs.lens)
         assertEquals(CameraController.FramerateConfig.FPS_24, restoredPrefs.framerate)
         assertEquals(PixelLogEncoderPipeline.VideoCodec.AV1, restoredPrefs.codec)
         assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_180, restoredPrefs.bitratePreset)
@@ -76,24 +51,36 @@ class CameraPreferencesTest {
         assertTrue(restoredPrefs.isBakeLutActive)
         assertEquals(1, restoredPrefs.logCurveType)
         assertEquals("dwg", restoredPrefs.selectedLutId)
-
-        assertFalse(restoredPrefs.isShutterAuto)
-        assertFalse(restoredPrefs.isIsoAuto)
-        assertFalse(restoredPrefs.isWbAuto)
-        assertFalse(restoredPrefs.isFocusAuto)
-
-        assertEquals(10, restoredPrefs.shutterIndex)
-        assertEquals(5, restoredPrefs.isoIndex)
-        assertEquals(4, restoredPrefs.evIndex)
-        assertEquals(12, restoredPrefs.wbIndex)
-        assertEquals(3.5f, restoredPrefs.focusDiopter, 1e-4f)
         assertEquals("ISO", restoredPrefs.activeParamTabName)
+    }
+
+    @Test
+    fun testCameraControlsAreNotPersistedAndLegacyKeysArePurged() {
+        // Pre-populate SharedPreferences with legacy manual camera control and lens keys
+        fakePrefs.edit()
+            .putString("pref_lens", "TELE_5X")
+            .putBoolean("pref_shutter_auto", false)
+            .putBoolean("pref_iso_auto", false)
+            .putBoolean("pref_wb_auto", false)
+            .putBoolean("pref_focus_auto", false)
+            .putInt("pref_shutter_index", 5)
+            .putInt("pref_iso_index", 8)
+            .putInt("pref_ev_index", 3)
+            .putInt("pref_wb_index", 14)
+            .putFloat("pref_focus_diopter", 5.0f)
+            .apply()
+
+        // Initializing CameraPreferences must purge all legacy camera control and lens keys
+        CameraPreferences(fakePrefs)
+
+        for (legacyKey in CameraPreferences.LEGACY_CONTROL_KEYS) {
+            assertFalse("Legacy key $legacyKey should have been purged from storage", fakePrefs.contains(legacyKey))
+        }
     }
 
     @Test
     fun testCorruptedOrInvalidEnumValuesFallbackGracefully() {
         fakePrefs.edit()
-            .putString(CameraPreferences.KEY_LENS, "NON_EXISTENT_LENS")
             .putString(CameraPreferences.KEY_FRAMERATE, "INVALID_FPS")
             .putString(CameraPreferences.KEY_CODEC, "UNKNOWN_CODEC")
             .putString(CameraPreferences.KEY_BITRATE_PRESET, "CORRUPT_BITRATE")
@@ -102,7 +89,6 @@ class CameraPreferencesTest {
 
         val restoredPrefs = CameraPreferences(fakePrefs)
 
-        assertEquals(CameraController.LensZoom.WIDE_1X, restoredPrefs.lens)
         assertEquals(CameraController.FramerateConfig.FPS_30, restoredPrefs.framerate)
         assertEquals(PixelLogEncoderPipeline.VideoCodec.HEVC, restoredPrefs.codec)
         assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_140, restoredPrefs.bitratePreset)

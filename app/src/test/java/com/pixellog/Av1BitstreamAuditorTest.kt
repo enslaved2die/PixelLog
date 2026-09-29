@@ -52,5 +52,12 @@ class Av1BitstreamAuditorTest {
         assertTrue(result.hasSequenceHeader)
         assertEquals(0, result.sequenceHeaderOffset)
         assertEquals(0, result.profile)
+        assertFalse(result.isBt709Signaled)
+    }
+
+    @Test
+    fun testAuditCsd0_DefaultBt709SignaledFalse() {
+        val result = Av1BitstreamAuditor.auditCsd0(ByteArray(0))
+        assertFalse(result.isBt709Signaled)
     }
 }

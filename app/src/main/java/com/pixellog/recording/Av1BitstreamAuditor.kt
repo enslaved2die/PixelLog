@@ -47,7 +47,8 @@ object Av1BitstreamAuditor {
         val colorPrimaries: Int,
         val transferCharacteristics: Int,
         val matrixCoefficients: Int,
-        val isBt2020Signaled: Boolean
+        val isBt2020Signaled: Boolean,
+        val isBt709Signaled: Boolean = false
     )
 
     /**
@@ -118,11 +119,12 @@ object Av1BitstreamAuditor {
             val bitDepth = parsed.bitDepth
             val isMain10 = (profile == 0 && bitDepth == 10)
             val isBt2020 = parsed.colorPrimaries == CP_BT_2020 || parsed.matrixCoefficients == MC_BT_2020_NCL
+            val isBt709 = parsed.colorPrimaries == CP_BT_709 || parsed.matrixCoefficients == MC_BT_709
 
             logInfo(
                 "Parsed Sequence Header: profile=$profile, bitDepth=$bitDepth, isMain10=$isMain10, " +
                 "colorDescPresent=${parsed.colorDescriptionPresent}, primaries=${parsed.colorPrimaries}, " +
-                "matrix=${parsed.matrixCoefficients}, isBt2020=$isBt2020"
+                "matrix=${parsed.matrixCoefficients}, isBt2020=$isBt2020, isBt709=$isBt709"
             )
 
             Av1AuditResult(
@@ -135,7 +137,8 @@ object Av1BitstreamAuditor {
                 colorPrimaries = parsed.colorPrimaries,
                 transferCharacteristics = parsed.transferCharacteristics,
                 matrixCoefficients = parsed.matrixCoefficients,
-                isBt2020Signaled = isBt2020
+                isBt2020Signaled = isBt2020,
+                isBt709Signaled = isBt709
             )
         } catch (e: Exception) {
             logWarning("Exception while parsing Sequence Header OBU bitstream: ${e.message}")

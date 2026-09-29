@@ -108,5 +108,8 @@ PixelLog provides two recording modes in the in-app settings card:
    - Accompanied by a frame-accurate `.json` sidecar containing sensor metadata, black/white levels, and color matrices.
 
 2. **REC BAKE: BAKED**:
-   - The active 3D LUT (built-in Rec.709, DWG, ACES, or imported `.cube`) is burned directly into the 10-bit recording stream during GPU Pass 2.
+   - The active 3D LUT (built-in Rec.709, AgX Film, AgX Punchy, AgX HLG HDR, DWG, ACES, or imported `.cube`) is burned directly into the 10-bit recording stream during GPU Pass 2.
+   - **Dynamic Color Space Signaling**:
+     - When baking standard SDR display LUTs (Rec.709, AgX Base, AgX Punchy), the encoder automatically signals **BT.709 color primaries** (`COLOR_STANDARD_BT709`) and **SDR transfer** (`COLOR_TRANSFER_SDR_VIDEO`), ensuring clips look accurate on standard sRGB/Rec.709 displays without washed-out colors.
+     - When baking **AgX HLG HDR**, the encoder signals **BT.2020 color primaries** (`COLOR_STANDARD_BT2020`) and **ITU-R BT.2100 HLG transfer** (`COLOR_TRANSFER_HLG`), preserving 10-bit HDR highlights up to 1000 nits with smooth AgX shoulder roll-off.
    - Output clips are contrasty, color-graded, and ready for immediate client delivery or editing with zero post-processing required.

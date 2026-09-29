@@ -146,12 +146,12 @@ class CameraController(
         val isBinned: Boolean
     ) {
         FPS_24("24", 24.0, 41_666_667L, 20_833_333L, 48, Range(24, 24), false),
-        FPS_25("25", 25.0, 40_000_000L, 20_000_000L, 50, Range(24, 30), false),
+        FPS_25("25", 25.0, 40_000_000L, 20_000_000L, 50, Range(25, 25), false),
         FPS_29_97("29.97", 29.970029, 33_366_667L, 16_683_333L, 60, Range(30, 30), false),
         FPS_30("30", 30.0, 33_333_333L, 16_666_666L, 60, Range(30, 30), false),
-        FPS_48("48", 48.0, 20_833_333L, 10_416_667L, 96, Range(30, 60), false),
-        FPS_50("50", 50.0, 20_000_000L, 10_000_000L, 100, Range(15, 60), false),
-        FPS_60("60", 60.0, 16_666_666L, 8_333_333L, 120, Range(30, 60), false);
+        FPS_48("48", 48.0, 20_833_333L, 10_416_667L, 96, Range(48, 48), false),
+        FPS_50("50", 50.0, 20_000_000L, 10_000_000L, 100, Range(50, 50), false),
+        FPS_60("60", 60.0, 16_666_666L, 8_333_333L, 120, Range(60, 60), false);
 
         val targetFps: Double get() = fps
         val binned: Boolean get() = isBinned
@@ -282,6 +282,36 @@ class CameraController(
     var onAfStateChanged: ((AfState) -> Unit)? = null
     var onAeStateChanged: ((AeState) -> Unit)? = null
     private var shouldLockAeAfterPrecapture = false
+    private var preLockShutterAuto: Boolean = true
+    private var preLockIsoAuto: Boolean = true
+    private var lastProcessedFrameNumber: Long = 0L
+    private var pendingAeRegionFrame: Long = -1L
+    private val pipelineMaxDepth: Int
+        get() = cameraCharacteristics?.get(CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH)?.toInt() ?: 4
+
+    /**
+     * Instantly locks exposure to the currently visible frame (Manual Takeover).
+     * Bypasses the vendor HAL's predictive CONTROL_AE_LOCK and directly sets
+     * CONTROL_AE_MODE_OFF with instantaneous sensor sensitivity and exposure time.
+     */
+    fun lockExposureInstantaneous() {
+        val currentIso = (if (lastIso > 0) lastIso else lastAutoIso).coerceIn(50, 6400)
+        val currentShutterNs = (if (lastExposureNs > 0) lastExposureNs else lastAutoExposureNs)
+            .coerceIn(100_000L, currentFramerate.frameDurationNs)
+
+        targetIso = currentIso
+        targetShutterNs = currentShutterNs
+        preLockShutterAuto = isShutterAuto
+        preLockIsoAuto = isIsoAuto
+        isShutterAuto = false
+        isIsoAuto = false
+        isAeLocked = true
+        currentAeState = AeState.LOCKED
+        shouldLockAeAfterPrecapture = false
+
+        onAeStateChanged?.invoke(AeState.LOCKED)
+        applyStateAndRepeat()
+    }
 
     fun setFocusDiopter(diopter: Float) {
         targetFocusDiopter = diopter.coerceIn(0.0f, 10.0f)
@@ -841,9 +871,25 @@ class CameraController(
         return MeteringRectangle(Rect(left, top, right, bottom), MeteringRectangle.METERING_WEIGHT_MAX)
     }
 
+    private fun getBestFpsRange(config: FramerateConfig): Range<Int> {
+        val target = config.fps.roundToInt()
+        val available = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        if (available != null) {
+            val exact = available.firstOrNull { it.lower == target && it.upper == target }
+            if (exact != null) return exact
+
+            val matchUpper = available.filter { it.upper == target }.maxByOrNull { it.lower }
+            if (matchUpper != null) return matchUpper
+
+            val closest = available.minByOrNull { kotlin.math.abs(it.upper - target) }
+            if (closest != null) return closest
+        }
+        return config.fpsRange
+    }
+
     private fun populateCommonSettings(builder: CaptureRequest.Builder) {
-        // Clamp frame rate to configured cadence
-        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, currentFramerate.fpsRange)
+        // Clamp frame rate to configured cadence (fixed range preferred to eliminate exposure pulsing)
+        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, getBestFpsRange(currentFramerate))
         builder.set(CaptureRequest.SENSOR_FRAME_DURATION, currentFramerate.frameDurationNs)
 
         // Prevent digital gain highlight clipping
@@ -893,8 +939,19 @@ class CameraController(
         val hasShutterPriority = supportsAePriority(AE_PRIORITY_SHUTTER)
         val hasIsoPriority = supportsAePriority(AE_PRIORITY_ISO)
 
-        // Exposure controls (Independent Shutter & ISO)
-        if (isShutterAuto && isIsoAuto) {
+        // Exposure controls (Independent Shutter & ISO with Manual Takeover AE Lock)
+        if (isAeLocked || (!isShutterAuto && !isIsoAuto)) {
+            // Manual Takeover / Locked Exposure:
+            // Freeze hardware registers directly at the sensor level (CONTROL_AE_MODE_OFF)
+            // for 100% deterministic exposure with zero hunting, floating, or predictive drift.
+            builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
+            builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
+            builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 100)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
+
+        } else if (isShutterAuto && isIsoAuto) {
             // 1. Full Auto Exposure (AE)
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
@@ -902,6 +959,7 @@ class CameraController(
                 try { builder.set(KEY_AE_PRIORITY_MODE, AE_PRIORITY_OFF) } catch (_: Throwable) {}
             }
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, targetEvCompensation)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
 
         } else if (!isShutterAuto && isIsoAuto && hasShutterPriority) {
             // 2. Hardware Shutter Priority (Android 16+ Native on Tensor G6)
@@ -910,6 +968,7 @@ class CameraController(
             try { builder.set(KEY_AE_PRIORITY_MODE!!, AE_PRIORITY_SHUTTER) } catch (_: Throwable) {}
             builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, targetEvCompensation)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
 
         } else if (isShutterAuto && !isIsoAuto && hasIsoPriority) {
             // 3. Hardware ISO Priority (Android 16+ Native on Tensor G6)
@@ -918,6 +977,7 @@ class CameraController(
             try { builder.set(KEY_AE_PRIORITY_MODE!!, AE_PRIORITY_ISO) } catch (_: Throwable) {}
             builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
             builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, targetEvCompensation)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
 
         } else {
             // 4. Pure Manual or Non-Compounding Anchor Fallback
@@ -927,36 +987,29 @@ class CameraController(
             val evStep = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
             val evScale = Math.pow(2.0, targetEvCompensation * (evStep?.toDouble() ?: 0.5))
 
-            if (!isShutterAuto && !isIsoAuto) {
-                // Full Manual
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
-            } else if (!isShutterAuto && isIsoAuto) {
-                // Shutter Priority Fallback: Use fixed lastAuto anchor
+            if (!isShutterAuto && isIsoAuto) {
+                // Shutter Priority Fallback: Use live auto anchor
                 builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
                 val baseIso = if (lastAutoIso > 0) lastAutoIso else 100
                 val baseShutter = if (lastAutoExposureNs > 0) lastAutoExposureNs else SHUTTER_180_NS
                 val computedIso = (baseIso * (baseShutter.toDouble() / targetShutterNs) * evScale).roundToInt().coerceIn(50, 6400)
                 builder.set(CaptureRequest.SENSOR_SENSITIVITY, computedIso)
             } else {
-                // ISO Priority Fallback: Use fixed lastAuto anchor
+                // ISO Priority Fallback: Use live auto anchor
                 builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
                 val baseIso = if (lastAutoIso > 0) lastAutoIso else 100
                 val baseShutter = if (lastAutoExposureNs > 0) lastAutoExposureNs else SHUTTER_180_NS
                 val computedShutter = (baseShutter * (baseIso.toDouble() / targetIso) * evScale).toLong().coerceIn(100_000L, 1_000_000_000L)
                 builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, computedShutter)
             }
+            builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 100)
+            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
         }
 
-        // Auto-Exposure Metering Regions & Lock
+        // Auto-Exposure Metering Regions (only active when not locked)
         val maxAe = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0
-        if (maxAe > 0 && aeMeteringRegion != null) {
+        if (maxAe > 0 && aeMeteringRegion != null && !isAeLocked) {
             builder.set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(aeMeteringRegion))
-        }
-        if (isAeLocked) {
-            builder.set(CaptureRequest.CONTROL_AE_LOCK, true)
-        } else {
-            builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
         }
 
         // White Balance (Independent WB & Auto-Tint)
@@ -1028,10 +1081,6 @@ class CameraController(
     }
 
     fun triggerHoldToSetExposure(u: Float, v: Float, lock: Boolean = true, onStateChanged: ((AeState) -> Unit)? = null) {
-        val session = captureSession ?: return
-        val camera = cameraDevice ?: return
-        val rawSurface = engine.getCameraSurface() ?: return
-
         val region = mapNormalizedToSensorCoords(u, v)
         aeMeteringRegion = region
         currentAeState = AeState.METERING
@@ -1039,42 +1088,35 @@ class CameraController(
         onAeStateChanged?.invoke(AeState.METERING)
         shouldLockAeAfterPrecapture = lock
 
-        // If both shutter and ISO were manual, switch ISO to auto to allow AE metering
-        if (!isShutterAuto && !isIsoAuto) {
+        // Remember user's auto modes prior to locking
+        preLockShutterAuto = isShutterAuto
+        preLockIsoAuto = isIsoAuto
+
+        // Enable AE so the camera can meter the selected spot without precapture flash sweeps
+        if (supportsAePriority(AE_PRIORITY_SHUTTER)) {
+            // Keep 180° shutter fixed, meter ISO
+            isShutterAuto = false
+            isIsoAuto = true
+        } else {
+            isShutterAuto = true
             isIsoAuto = true
         }
+        isAeLocked = false
 
-        val task = Runnable {
-            try {
-                if (lock) {
-                    val precaptureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
-                        addTarget(rawSurface)
-                        populateCommonSettings(this)
-                        set(CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
-                        set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_START)
-                    }
-                    session.capture(precaptureBuilder.build(), null, cameraHandler)
-                }
+        // Discard stale in-flight frames before accepting convergence on the new spot
+        pendingAeRegionFrame = lastProcessedFrameNumber + pipelineMaxDepth
 
-                applyStateAndRepeat()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to trigger hold-to-set-exposure: ${e.message}", e)
-            }
-        }
-
-        val executor = cameraExecutor
-        if (executor != null) {
-            executor.execute(task)
-        } else {
-            task.run()
-        }
+        applyStateAndRepeat()
     }
 
     fun unlockExposure() {
         isAeLocked = false
         shouldLockAeAfterPrecapture = false
-        currentAeState = if (aeMeteringRegion != null) AeState.METERING else AeState.IDLE
-        onAeStateChanged?.invoke(currentAeState)
+        aeMeteringRegion = null // Return to full-frame matrix metering
+        isShutterAuto = preLockShutterAuto
+        isIsoAuto = preLockIsoAuto
+        currentAeState = AeState.IDLE
+        onAeStateChanged?.invoke(AeState.IDLE)
         applyStateAndRepeat()
     }
 
@@ -1083,6 +1125,8 @@ class CameraController(
         aeMeteringRegion = null
         isAeLocked = false
         shouldLockAeAfterPrecapture = false
+        isShutterAuto = preLockShutterAuto
+        isIsoAuto = preLockIsoAuto
         currentAfState = AfState.IDLE
         currentAeState = AeState.IDLE
         onAfStateChanged?.invoke(AfState.IDLE)
@@ -1099,11 +1143,10 @@ class CameraController(
                         addTarget(rawSurface)
                         populateCommonSettings(this)
                         set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
-                        set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CameraMetadata.CONTROL_AE_PRECAPTURE_TRIGGER_CANCEL)
                     }
                     session.capture(cancelBuilder.build(), null, cameraHandler)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to cancel AF/AE triggers: ${e.message}")
+                    Log.w(TAG, "Failed to cancel AF trigger: ${e.message}")
                 }
             }
             applyStateAndRepeat()
@@ -1117,6 +1160,205 @@ class CameraController(
         }
     }
 
+    private val repeatingCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            val physResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && currentPhysicalCameraId.isNotEmpty()) {
+                result.physicalCameraResults[currentPhysicalCameraId] ?: result
+            } else {
+                result
+            }
+
+            val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+            val frameNumber = result.frameNumber
+            lastProcessedFrameNumber = frameNumber
+
+            val iso = physResult.get(CaptureResult.SENSOR_SENSITIVITY) ?: targetIso
+            val exposureNs = physResult.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: targetShutterNs
+            val focusDiopter = physResult.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: targetFocusDiopter
+            val evComp = physResult.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: targetEvCompensation
+            val evStep = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+            val evFloat = evComp * (evStep?.toFloat() ?: 0.5f)
+
+            // AF State monitoring
+            // physResult is correct here: AF is per-physical-camera on Pixel HAL.
+            val afState = physResult.get(CaptureResult.CONTROL_AF_STATE)
+            if (afState != null && currentAfState == AfState.SCANNING) {
+                when (afState) {
+                    CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED -> {
+                        currentAfState = AfState.FOCUSED_LOCKED
+                        onAfStateChanged?.invoke(AfState.FOCUSED_LOCKED)
+                    }
+                    CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED -> {
+                        currentAfState = AfState.NOT_FOCUSED_LOCKED
+                        onAfStateChanged?.invoke(AfState.NOT_FOCUSED_LOCKED)
+                    }
+                }
+            }
+
+            // AE State monitoring & guarded convergence latch
+            // Guard against stale in-flight frames so we only lock once the spot has actually metered
+            val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                ?: physResult.get(CaptureResult.CONTROL_AE_STATE)
+            if (currentAeState == AeState.METERING) {
+                if (frameNumber > pendingAeRegionFrame) {
+                    when (aeState) {
+                        CaptureResult.CONTROL_AE_STATE_CONVERGED,
+                        CaptureResult.CONTROL_AE_STATE_LOCKED,
+                        CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED -> {
+                            currentAeState = AeState.CONVERGED
+                            onAeStateChanged?.invoke(AeState.CONVERGED)
+                            if (shouldLockAeAfterPrecapture) {
+                                cameraHandler?.post { lockExposureInstantaneous() }
+                            }
+                        }
+                        CaptureResult.CONTROL_AE_STATE_SEARCHING,
+                        CaptureResult.CONTROL_AE_STATE_PRECAPTURE -> {
+                            // Actively converging on the spot
+                        }
+                        else -> {
+                            // Fallback for HALs that don't transition AE states cleanly:
+                            // After 12 frames on the new region, lock at the metered exposure
+                            if (shouldLockAeAfterPrecapture && frameNumber > pendingAeRegionFrame + 12) {
+                                cameraHandler?.post { lockExposureInstantaneous() }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1. SENSOR_NEUTRAL_COLOR_POINT & Live AWB Estimation
+            val neutralRational = physResult.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
+            val awbGains = physResult.get(CaptureResult.COLOR_CORRECTION_GAINS)
+
+            val liveNeutralPoint = if (neutralRational != null && neutralRational.size >= 3) {
+                floatArrayOf(
+                    neutralRational[0].toFloat(),
+                    neutralRational[1].toFloat(),
+                    neutralRational[2].toFloat()
+                )
+            } else if (awbGains != null && awbGains.red > 0.01f && awbGains.blue > 0.01f) {
+                floatArrayOf(1.0f / awbGains.red, 1.0f, 1.0f / awbGains.blue)
+            } else {
+                lastLiveNeutralPoint ?: floatArrayOf(1.06f, 1.0f, 0.92f)
+            }
+
+            if (isWbAuto) {
+                lastLiveNeutralPoint = liveNeutralPoint
+                lastLiveKelvin = ColorScienceUtils.estimateTemperatureFromNeutral(liveNeutralPoint, currentCalibration).roundToInt()
+            }
+
+            val effectiveKelvin = if (isWbAuto) lastLiveKelvin else targetKelvin
+
+            // Effective neutral point passed to GPU debayer shader
+            val effectiveNeutralPoint = if (isWbAuto) {
+                liveNeutralPoint
+            } else {
+                ColorScienceUtils.calculateNeutralColorPoint(
+                    kelvin = targetKelvin,
+                    liveNeutral = lastLiveNeutralPoint,
+                    liveKelvin = lastLiveKelvin,
+                    calibration = currentCalibration
+                )
+            }
+
+            if (isIsoAuto) {
+                lastAutoIso = iso
+            }
+            if (isShutterAuto) {
+                lastAutoExposureNs = exposureNs
+            }
+            lastExposureNs = exposureNs
+            lastIso = iso
+            lastFocusDiopter = focusDiopter
+            lastKelvin = effectiveKelvin
+            lastEv = evFloat
+
+            onLiveTelemetry?.invoke(iso, exposureNs, focusDiopter, effectiveKelvin, evFloat)
+
+            // 2. Dynamic Black Level with range sanitization & temporal EMA smoothing
+            val whiteLevel = currentCalibration?.whiteLevel ?: 4095.0f
+
+            val rawDynBlack = physResult.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+                ?: result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
+
+            val dynBlack = if (rawDynBlack != null && rawDynBlack.size == 4) {
+                // Reject leaked Camera 0 12-bit black level (> 128.0) when current sensor is 10-bit (whiteLevel <= 1023.0)
+                if (whiteLevel <= 1023.0f && rawDynBlack[0] > 128.0f) {
+                    currentCalibration?.dynamicBlackLevel ?: floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f)
+                } else {
+                    floatArrayOf(rawDynBlack[0], rawDynBlack[1], rawDynBlack[2], rawDynBlack[3])
+                }
+            } else {
+                currentCalibration?.dynamicBlackLevel ?: (if (whiteLevel <= 1023.0f) floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f) else floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f))
+            }
+
+            // Temporal EMA filter (alpha = 0.20) to eliminate sub-code shadow flickering in log curve
+            val smoothedDynBlack = if (lastDynamicBlackLevel.size == 4) {
+                val alpha = 0.20f
+                FloatArray(4) { i ->
+                    lastDynamicBlackLevel[i] * (1f - alpha) + dynBlack[i] * alpha
+                }
+            } else {
+                dynBlack
+            }
+
+            // Temporal EMA filter on neutral color point in Auto WB mode
+            val smoothedNeutralPoint = if (isWbAuto && lastNeutralColorPoint.size == 3) {
+                val alpha = 0.20f
+                FloatArray(3) { i ->
+                    lastNeutralColorPoint[i] * (1f - alpha) + effectiveNeutralPoint[i] * alpha
+                }
+            } else {
+                effectiveNeutralPoint
+            }
+
+            // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear scaled by LOG_XMAX)
+            val compMatrix = ColorScienceUtils.computeCompositeColorMatrix(
+                neutralPoint = smoothedNeutralPoint,
+                calibration = currentCalibration,
+                exposureGain = ColorScienceUtils.LOG_XMAX
+            )
+
+            lastDynamicBlackLevel = smoothedDynBlack
+            lastWhiteLevel = whiteLevel
+            lastNeutralColorPoint = smoothedNeutralPoint
+            lastCompositeMatrix = compMatrix
+
+            // 4. Lens Shading Map (Phase 2.2)
+            val shadingMap = physResult.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
+            var shadingData: FloatArray? = null
+            var shadingW = 0
+            var shadingH = 0
+            if (shadingMap != null) {
+                shadingW = shadingMap.columnCount
+                shadingH = shadingMap.rowCount
+                val totalFloats = shadingW * shadingH * 4
+                val arr = FloatArray(totalFloats)
+                shadingMap.copyGainFactors(arr, 0)
+                shadingData = arr
+            }
+
+            // Dispatch timestamp-synchronized metadata to C++ GPU debayering pipeline
+            engine.updateFrameMetadata(
+                timestampNs = timestampNs,
+                blackLevel = smoothedDynBlack,
+                whiteLevel = whiteLevel,
+                neutralColorPoint = smoothedNeutralPoint,
+                compositeMatrix = compMatrix,
+                exposureGain = ColorScienceUtils.LOG_XMAX,
+                shadingMap = shadingData,
+                shadingWidth = shadingW,
+                shadingHeight = shadingH
+            )
+
+            onFrameMetadataListener?.invoke(smoothedDynBlack, whiteLevel)
+        }
+    }
+
     private fun applyStateAndRepeat() {
         val session = captureSession ?: return
         val camera = cameraDevice ?: return
@@ -1126,182 +1368,20 @@ class CameraController(
         builder.addTarget(rawSurface)
         populateCommonSettings(builder)
 
-        // Repeating Capture Request Callback: Metadata synchronization
-        session.setRepeatingRequest(builder.build(), object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                session: CameraCaptureSession,
-                request: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                val physResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && currentPhysicalCameraId.isNotEmpty()) {
-                    result.physicalCameraResults[currentPhysicalCameraId] ?: result
-                } else {
-                    result
-                }
-
-                val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
-
-                val iso = physResult.get(CaptureResult.SENSOR_SENSITIVITY) ?: targetIso
-                val exposureNs = physResult.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: targetShutterNs
-                val focusDiopter = physResult.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: targetFocusDiopter
-                val evComp = physResult.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: targetEvCompensation
-                val evStep = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
-                val evFloat = evComp * (evStep?.toFloat() ?: 0.5f)
-
-                // AF State monitoring
-                // physResult is correct here: AF is per-physical-camera on Pixel HAL.
-                val afState = physResult.get(CaptureResult.CONTROL_AF_STATE)
-                if (afState != null && currentAfState == AfState.SCANNING) {
-                    when (afState) {
-                        CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED -> {
-                            currentAfState = AfState.FOCUSED_LOCKED
-                            onAfStateChanged?.invoke(AfState.FOCUSED_LOCKED)
-                        }
-                        CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED -> {
-                            currentAfState = AfState.NOT_FOCUSED_LOCKED
-                            onAfStateChanged?.invoke(AfState.NOT_FOCUSED_LOCKED)
-                        }
-                    }
-                }
-
-                // AE State monitoring
-                // IMPORTANT: CONTROL_AE_STATE is a LOGICAL camera result on Pixel HAL.
-                // Physical camera sub-results do not carry it → always null from physResult.
-                // Read from the top-level TotalCaptureResult and fall back to physResult
-                // only as a last resort (e.g. single-camera devices where physResult == result).
-                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
-                    ?: physResult.get(CaptureResult.CONTROL_AE_STATE)
-                if (aeState != null && currentAeState == AeState.METERING) {
-                    when (aeState) {
-                        // Lock as soon as the HAL reports a stable exposure.
-                        // CONVERGED  : AE has settled to the metering target.
-                        // LOCKED     : HAL accepted a prior lock command (fast path on some devices).
-                        // FLASH_REQUIRED: AE converged but needs flash; honour lock in either case.
-                        CaptureResult.CONTROL_AE_STATE_CONVERGED,
-                        CaptureResult.CONTROL_AE_STATE_LOCKED,
-                        CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED -> {
-                            currentAeState = AeState.CONVERGED
-                            onAeStateChanged?.invoke(AeState.CONVERGED)
-                            if (shouldLockAeAfterPrecapture) {
-                                isAeLocked = true
-                                currentAeState = AeState.LOCKED
-                                shouldLockAeAfterPrecapture = false
-                                onAeStateChanged?.invoke(AeState.LOCKED)
-                                cameraHandler?.post { applyStateAndRepeat() }
-                            }
-                        }
-                        // While actively searching, keep waiting — don't lock prematurely.
-                        CaptureResult.CONTROL_AE_STATE_SEARCHING,
-                        CaptureResult.CONTROL_AE_STATE_PRECAPTURE -> { /* still metering */ }
-                    }
-                }
-
-                // 1. SENSOR_NEUTRAL_COLOR_POINT & Live AWB Estimation
-                val neutralRational = physResult.get(CaptureResult.SENSOR_NEUTRAL_COLOR_POINT)
-                val awbGains = physResult.get(CaptureResult.COLOR_CORRECTION_GAINS)
-
-                val liveNeutralPoint = if (neutralRational != null && neutralRational.size >= 3) {
-                    floatArrayOf(
-                        neutralRational[0].toFloat(),
-                        neutralRational[1].toFloat(),
-                        neutralRational[2].toFloat()
-                    )
-                } else if (awbGains != null && awbGains.red > 0.01f && awbGains.blue > 0.01f) {
-                    floatArrayOf(1.0f / awbGains.red, 1.0f, 1.0f / awbGains.blue)
-                } else {
-                    lastLiveNeutralPoint ?: floatArrayOf(1.06f, 1.0f, 0.92f)
-                }
-
-                if (isWbAuto) {
-                    lastLiveNeutralPoint = liveNeutralPoint
-                    lastLiveKelvin = ColorScienceUtils.estimateTemperatureFromNeutral(liveNeutralPoint, currentCalibration).roundToInt()
-                }
-
-                val effectiveKelvin = if (isWbAuto) lastLiveKelvin else targetKelvin
-
-                // Effective neutral point passed to GPU debayer shader
-                val effectiveNeutralPoint = if (isWbAuto) {
-                    liveNeutralPoint
-                } else {
-                    ColorScienceUtils.calculateNeutralColorPoint(
-                        kelvin = targetKelvin,
-                        liveNeutral = lastLiveNeutralPoint,
-                        liveKelvin = lastLiveKelvin,
-                        calibration = currentCalibration
-                    )
-                }
-
-                if (isShutterAuto && isIsoAuto) {
-                    lastAutoExposureNs = exposureNs
-                    lastAutoIso = iso
-                }
-                lastExposureNs = exposureNs
-                lastIso = iso
-                lastFocusDiopter = focusDiopter
-                lastKelvin = effectiveKelvin
-                lastEv = evFloat
-
-                onLiveTelemetry?.invoke(iso, exposureNs, focusDiopter, effectiveKelvin, evFloat)
-
-                // 2. Dynamic Black Level with range sanitization
-                val whiteLevel = currentCalibration?.whiteLevel ?: 4095.0f
-
-                val rawDynBlack = physResult.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
-                    ?: result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
-
-                val dynBlack = if (rawDynBlack != null && rawDynBlack.size == 4) {
-                    // Reject leaked Camera 0 12-bit black level (> 128.0) when current sensor is 10-bit (whiteLevel <= 1023.0)
-                    if (whiteLevel <= 1023.0f && rawDynBlack[0] > 128.0f) {
-                        currentCalibration?.dynamicBlackLevel ?: floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f)
-                    } else {
-                        rawDynBlack
-                    }
-                } else {
-                    currentCalibration?.dynamicBlackLevel ?: (if (whiteLevel <= 1023.0f) floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f) else floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f))
-                }
-
-                // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear scaled by LOG_XMAX)
-                val compMatrix = ColorScienceUtils.computeCompositeColorMatrix(
-                    neutralPoint = effectiveNeutralPoint,
-                    calibration = currentCalibration,
-                    exposureGain = ColorScienceUtils.LOG_XMAX
-                )
-
-                lastDynamicBlackLevel = dynBlack
-                lastWhiteLevel = whiteLevel
-                lastNeutralColorPoint = effectiveNeutralPoint
-                lastCompositeMatrix = compMatrix
-
-                // 4. Lens Shading Map (Phase 2.2)
-                val shadingMap = physResult.get(CaptureResult.STATISTICS_LENS_SHADING_CORRECTION_MAP)
-                var shadingData: FloatArray? = null
-                var shadingW = 0
-                var shadingH = 0
-                if (shadingMap != null) {
-                    shadingW = shadingMap.columnCount
-                    shadingH = shadingMap.rowCount
-                    val totalFloats = shadingW * shadingH * 4
-                    val arr = FloatArray(totalFloats)
-                    shadingMap.copyGainFactors(arr, 0)
-                    shadingData = arr
-                }
-
-                // Dispatch timestamp-synchronized metadata to C++ GPU debayering pipeline
-                engine.updateFrameMetadata(
-                    timestampNs = timestampNs,
-                    blackLevel = dynBlack,
-                    whiteLevel = whiteLevel,
-                    neutralColorPoint = effectiveNeutralPoint,
-                    compositeMatrix = compMatrix,
-                    exposureGain = ColorScienceUtils.LOG_XMAX,
-                    shadingMap = shadingData,
-                    shadingWidth = shadingW,
-                    shadingHeight = shadingH
-                )
-
-                onFrameMetadataListener?.invoke(dynBlack, whiteLevel)
+        val task = Runnable {
+            try {
+                session.setRepeatingRequest(builder.build(), repeatingCaptureCallback, cameraHandler)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to apply repeating request: ${e.message}")
             }
-        }, cameraHandler)
+        }
+
+        val executor = cameraExecutor
+        if (executor != null) {
+            executor.execute(task)
+        } else {
+            task.run()
+        }
     }
 
     fun closeCamera() {

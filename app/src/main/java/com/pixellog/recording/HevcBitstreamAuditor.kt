@@ -13,7 +13,8 @@ object HevcBitstreamAuditor {
         val hasSps: Boolean,
         val spsOffset: Int,
         val isBt2020Signaled: Boolean,
-        val isMain10Profile: Boolean
+        val isMain10Profile: Boolean,
+        val isBt709Signaled: Boolean = false
     )
 
     /**
