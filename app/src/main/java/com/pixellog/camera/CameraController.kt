@@ -308,7 +308,9 @@ class CameraController(
         isAeLocked = true
         currentAeState = AeState.LOCKED
         shouldLockAeAfterPrecapture = false
+        aeMeteringRegion = null
 
+        Log.i(TAG, "lockExposureInstantaneous: LOCKED actual exposure to ISO=$targetIso, Shutter=${targetShutterNs}ns")
         onAeStateChanged?.invoke(AeState.LOCKED)
         applyStateAndRepeat()
     }
@@ -1081,12 +1083,18 @@ class CameraController(
     }
 
     fun triggerHoldToSetExposure(u: Float, v: Float, lock: Boolean = true, onStateChanged: ((AeState) -> Unit)? = null) {
+        onAeStateChanged = onStateChanged
+        if (lock) {
+            // Lock actual exposure immediately: do NOT change the metering spot!
+            lockExposureInstantaneous()
+            return
+        }
+
         val region = mapNormalizedToSensorCoords(u, v)
         aeMeteringRegion = region
         currentAeState = AeState.METERING
-        onAeStateChanged = onStateChanged
         onAeStateChanged?.invoke(AeState.METERING)
-        shouldLockAeAfterPrecapture = lock
+        shouldLockAeAfterPrecapture = false
 
         // Remember user's auto modes prior to locking
         preLockShutterAuto = isShutterAuto
@@ -1217,12 +1225,19 @@ class CameraController(
                         }
                         CaptureResult.CONTROL_AE_STATE_SEARCHING,
                         CaptureResult.CONTROL_AE_STATE_PRECAPTURE -> {
-                            // Actively converging on the spot
+                            // Actively converging on the spot. Timeout after 15 frames if lock requested
+                            if (shouldLockAeAfterPrecapture && frameNumber > pendingAeRegionFrame + 15) {
+                                currentAeState = AeState.CONVERGED
+                                onAeStateChanged?.invoke(AeState.CONVERGED)
+                                cameraHandler?.post { lockExposureInstantaneous() }
+                            }
                         }
                         else -> {
                             // Fallback for HALs that don't transition AE states cleanly:
                             // After 12 frames on the new region, lock at the metered exposure
                             if (shouldLockAeAfterPrecapture && frameNumber > pendingAeRegionFrame + 12) {
+                                currentAeState = AeState.CONVERGED
+                                onAeStateChanged?.invoke(AeState.CONVERGED)
                                 cameraHandler?.post { lockExposureInstantaneous() }
                             }
                         }

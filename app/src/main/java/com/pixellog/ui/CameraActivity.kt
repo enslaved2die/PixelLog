@@ -1534,38 +1534,51 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
         }
 
-        // Long press (hold) → AE spot metering + lock
-        focusExposureOverlay.onHoldExposure = { normX, normY ->
-            cameraController.triggerHoldToSetExposure(normX, normY, lock = true) { aeState ->
+        // Long press (hold) → Instantaneous AE Lock / Unlock toggle (locks actual exposure)
+        focusExposureOverlay.onHoldExposure = { _, _ ->
+            if (cameraController.isAeLocked) {
+                cameraController.unlockExposure()
                 runOnUiThread {
-                    when (aeState) {
-                        CameraController.AeState.CONVERGED,
-                        CameraController.AeState.LOCKED -> {
-                            focusExposureOverlay.setExposureLocked(locked = true)
-                            // Sync live ISO/shutter dial positions and labels to reflect locked exposure
-                            val lockedShutter = cameraController.targetShutterNs
-                            val lockedIso = cameraController.targetIso
-                            if (lockedShutter > 0) {
-                                val speed = (1_000_000_000.0 / lockedShutter).roundToInt()
-                                val closestIdx = shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - speed) } ?: currentShutterIndex
-                                currentShutterIndex = closestIdx
-                            }
-                            val closestIsoIdx = isoValues.indices.minByOrNull { kotlin.math.abs(isoValues[it] - lockedIso) } ?: currentIsoIndex
-                            currentIsoIndex = closestIsoIdx
-                            updateAutoManualToggleForActiveTab()
-                            updateDialValueLabel()
-                        }
-                        else -> { /* METERING or IDLE */ }
-                    }
+                    focusExposureOverlay.dismissExposure()
+                    updateAutoManualToggleForActiveTab()
+                    updateDialValueLabel()
                 }
+            } else {
+                cameraController.lockExposureInstantaneous()
+                runOnUiThread {
+                    focusExposureOverlay.setExposureLocked(locked = true)
+                    // Sync live ISO/shutter dial positions and labels to reflect locked exposure
+                    val lockedShutter = cameraController.targetShutterNs
+                    val lockedIso = cameraController.targetIso
+                    if (lockedShutter > 0) {
+                        val speed = (1_000_000_000.0 / lockedShutter).roundToInt()
+                        val closestIdx = shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - speed) } ?: currentShutterIndex
+                        currentShutterIndex = closestIdx
+                    }
+                    val closestIsoIdx = isoValues.indices.minByOrNull { kotlin.math.abs(isoValues[it] - lockedIso) } ?: currentIsoIndex
+                    currentIsoIndex = closestIsoIdx
+                    updateAutoManualToggleForActiveTab()
+                    updateDialValueLabel()
+                }
+            }
+        }
+
+        // Long press toggle off → Unlock AE
+        focusExposureOverlay.onUnlockExposure = {
+            cameraController.unlockExposure()
+            runOnUiThread {
+                updateAutoManualToggleForActiveTab()
+                updateDialValueLabel()
             }
         }
 
         // Double tap → reset both AF and AE to full-scene continuous mode
         focusExposureOverlay.onResetAfAe = {
             cameraController.resetFocusAndExposure()
-            updateAutoManualToggleForActiveTab()
-            updateDialValueLabel()
+            runOnUiThread {
+                updateAutoManualToggleForActiveTab()
+                updateDialValueLabel()
+            }
         }
     }
 

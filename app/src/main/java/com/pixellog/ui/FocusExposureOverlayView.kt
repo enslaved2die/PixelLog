@@ -37,6 +37,7 @@ class FocusExposureOverlayView @JvmOverloads constructor(
     // ── Callbacks ──
     var onTapFocus: ((normX: Float, normY: Float) -> Unit)? = null
     var onHoldExposure: ((normX: Float, normY: Float) -> Unit)? = null
+    var onUnlockExposure: (() -> Unit)? = null
     var onResetAfAe: (() -> Unit)? = null
 
     // ── Reticle State ──
@@ -107,8 +108,13 @@ class FocusExposureOverlayView @JvmOverloads constructor(
             val normX = (e.x / width).coerceIn(0f, 1f)
             val normY = (e.y / height).coerceIn(0f, 1f)
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            showExposure(e.x, e.y, locked = true)
-            onHoldExposure?.invoke(normX, normY)
+            if (isExposureVisible && isExposureLocked) {
+                dismissExposure()
+                onUnlockExposure?.invoke()
+            } else {
+                showExposure(e.x, e.y, locked = true)
+                onHoldExposure?.invoke(normX, normY)
+            }
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
