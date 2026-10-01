@@ -25,10 +25,10 @@ class CameraPreferences(private val prefs: SharedPreferences) {
         const val KEY_BAKE_LUT = "pref_bake_lut"
         const val KEY_GENERATE_SIDECAR = "pref_generate_sidecar"
         const val KEY_STABILIZATION_MODE = "pref_stabilization_mode"
-        const val KEY_LOG_CURVE_TYPE = "pref_log_curve_type"
         const val KEY_SELECTED_LUT_ID = "pref_selected_lut_id"
 
         const val KEY_ACTIVE_PARAM_TAB = "pref_active_param_tab"
+        const val KEY_STORAGE_TARGET_ID = "pref_storage_target_id"
 
         val LEGACY_CONTROL_KEYS = listOf(
             "pref_lens",
@@ -130,10 +130,6 @@ class CameraPreferences(private val prefs: SharedPreferences) {
         }
         set(value) = prefs.edit().putString(KEY_STABILIZATION_MODE, value.name).apply()
 
-    var logCurveType: Int
-        get() = prefs.getInt(KEY_LOG_CURVE_TYPE, 0).coerceIn(0, 2)
-        set(value) = prefs.edit().putInt(KEY_LOG_CURVE_TYPE, value.coerceIn(0, 2)).apply()
-
     var selectedLutId: String
         get() = prefs.getString(KEY_SELECTED_LUT_ID, "rec709") ?: "rec709"
         set(value) = prefs.edit().putString(KEY_SELECTED_LUT_ID, value).apply()
@@ -141,6 +137,11 @@ class CameraPreferences(private val prefs: SharedPreferences) {
     var activeParamTabName: String
         get() = prefs.getString(KEY_ACTIVE_PARAM_TAB, "SHUTTER") ?: "SHUTTER"
         set(value) = prefs.edit().putString(KEY_ACTIVE_PARAM_TAB, value).apply()
+
+    var storageTargetId: String
+        get() = prefs.getString(KEY_STORAGE_TARGET_ID, com.pixellog.storage.StorageTargetManager.TARGET_INTERNAL_ID)
+            ?: com.pixellog.storage.StorageTargetManager.TARGET_INTERNAL_ID
+        set(value) = prefs.edit().putString(KEY_STORAGE_TARGET_ID, value).apply()
 
     fun clearAll() {
         prefs.edit().clear().apply()

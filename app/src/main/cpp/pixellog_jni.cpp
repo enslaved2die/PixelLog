@@ -228,17 +228,6 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetBakeLutToEncoder(
 }
 
 JNIEXPORT void JNICALL
-Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetLogCurveType(
-    JNIEnv* env,
-    jobject /* this */,
-    jlong handle,
-    jint type) {
-    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
-    if (!manager) return;
-    manager->setLogCurveType(type);
-}
-
-JNIEXPORT void JNICALL
 Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetExposureGain(
     JNIEnv* env,
     jobject /* this */,

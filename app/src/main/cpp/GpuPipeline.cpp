@@ -52,7 +52,6 @@ uniform int uHasLensShading;        // 1 if lens shading map is available, 0 oth
 // Color Science Uniforms (Phase 2 & Phase 3)
 uniform vec3 uNeutralColorPoint;    // SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
 uniform mat3 uCompositeMatrix;      // Sensor -> Bradford -> Rec.2020 Exposed (column-major)
-uniform int uLogCurveType;          // 0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log
 
 // Pixel-Log Analytical Curve Parameters (populated from log_params.json)
 uniform float uLogYb;
@@ -60,23 +59,6 @@ uniform float uLogBeta;
 uniform float uLogGamma;
 uniform float uLogDelta;
 uniform float uLogS;
-
-// Sony S-Log3
-const float SL3_CUTOFF    = 0.01125000;
-const float SL3_A         = 261.5 / 1023.0;
-const float SL3_B         = 420.0 / 1023.0;
-const float SL3_INV_019   = 1.0 / 0.19000000;
-const float SL3_TOE_SCALE = 6.62194376;
-const float SL3_TOE_OFF   = 95.0 / 1023.0;
-const float LOG10_INV_E   = 0.4342944819;
-
-// Apple Log
-const float AL_GAMMA = 0.08550479;
-const float AL_BETA  = 0.00964052;
-const float AL_DELTA = 0.69336945;
-const float AL_C     = 47.28711236;
-const float AL_R0    = -0.05641088;
-const float AL_RT    = 0.01000000;
 
 int getCfaChannel(ivec2 p, int pattern) {
     int idx = ((p.y & 1) << 1) | (p.x & 1);
@@ -114,34 +96,6 @@ vec3 applyPixelLogOETF(vec3 x) {
     vec3 toeVal = vec3(uLogYb) + vec3(uLogS) * x;
     vec3 isNonNeg = step(vec3(0.0), x);
     return mix(toeVal, logVal, isNonNeg);
-}
-
-// Sony S-Log3 OETF
-float sLog3Single(float x) {
-    if (x >= SL3_CUTOFF) {
-        float log10Val = log((x + 0.01) * SL3_INV_019) * LOG10_INV_E;
-        return SL3_B + SL3_A * log10Val;
-    } else {
-        return x * SL3_TOE_SCALE + SL3_TOE_OFF;
-    }
-}
-vec3 applySLog3OETF(vec3 R) {
-    return vec3(sLog3Single(max(R.r, 0.0)), sLog3Single(max(R.g, 0.0)), sLog3Single(max(R.b, 0.0)));
-}
-
-// Apple Log OETF
-float appleLogSingle(float R) {
-    if (R >= AL_RT) {
-        return AL_GAMMA * log2(R + AL_BETA) + AL_DELTA;
-    } else if (R >= AL_R0) {
-        float diff = R - AL_R0;
-        return AL_C * diff * diff;
-    } else {
-        return 0.0;
-    }
-}
-vec3 applyAppleLogOETF(vec3 R) {
-    return vec3(appleLogSingle(R.r), appleLogSingle(R.g), appleLogSingle(R.b));
 }
 
 void main() {
@@ -202,15 +156,8 @@ void main() {
     // Step 4-7: Sensor RGB -> Linear Working Gamut (BT.2020) via Composite Matrix
     vec3 linearWorking = uCompositeMatrix * wbRgb;
 
-    // Step 8: Apply Selected Log OETF
-    vec3 logOutput;
-    if (uLogCurveType == 1) {
-        logOutput = applySLog3OETF(linearWorking);
-    } else if (uLogCurveType == 2) {
-        logOutput = applyAppleLogOETF(linearWorking);
-    } else {
-        logOutput = applyPixelLogOETF(linearWorking);
-    }
+    // Step 8: Apply Pure Pixel-Log OETF
+    vec3 logOutput = applyPixelLogOETF(linearWorking);
 
     outLogColor = vec4(clamp(logOutput, 0.0, 1.0), 1.0);
 }
@@ -258,8 +205,7 @@ GpuPipeline::GpuPipeline()
       mInitialized(false),
       mIsLutEnabled(true),
       mBakeLutToEncoder(false),
-      mLogCurveType(0),
-      mExposureGain(11.5200f),
+      mExposureGain(pixellog::LOG_XMAX),
       mEglDisplay(EGL_NO_DISPLAY),
       mEglConfig(nullptr),
       mEglContext(EGL_NO_CONTEXT),
@@ -581,20 +527,12 @@ void GpuPipeline::setLutEnabled(bool enabled) {
     mIsLutEnabled.store(enabled);
 }
 
-void GpuPipeline::setLogCurveType(int32_t type) {
-    mLogCurveType.store(type);
-}
-
 void GpuPipeline::setExposureGain(float gain) {
     mExposureGain.store(gain);
 }
 
 bool GpuPipeline::isLutEnabled() const {
     return mIsLutEnabled.load();
-}
-
-int32_t GpuPipeline::getLogCurveType() const {
-    return mLogCurveType.load();
 }
 
 float GpuPipeline::getExposureGain() const {
@@ -622,8 +560,13 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
                               const SensorFrameMetadata& metadata,
                               int acquireFenceFd,
                               int* outReleaseFenceFd) {
+    if (outReleaseFenceFd) *outReleaseFenceFd = -1;
+
     std::lock_guard<std::mutex> lock(mPipelineMutex);
-    if (!mInitialized || !rawBuffer) return;
+    if (!mInitialized || !rawBuffer) {
+        if (acquireFenceFd >= 0) close(acquireFenceFd);
+        return;
+    }
 
     // Check for pending 3D LUT to upload or clear on this active rendering thread
     if (mHasPendingLut) {
@@ -647,17 +590,22 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     }
 
     // 1. Hardware Wait on Camera Acquire Fence
-    if (acquireFenceFd >= 0 && mEglCreateSyncKHR && mEglWaitSyncKHR) {
-        EGLint syncAttribs[] = {
-            EGL_SYNC_NATIVE_FENCE_FD_ANDROID, acquireFenceFd,
-            EGL_NONE
-        };
-        EGLSyncKHR acquireSync = mEglCreateSyncKHR(mEglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID, syncAttribs);
-        if (acquireSync != EGL_NO_SYNC_KHR) {
-            mEglWaitSyncKHR(mEglDisplay, acquireSync, 0);
-            mEglDestroySyncKHR(mEglDisplay, acquireSync);
+    if (acquireFenceFd >= 0) {
+        if (mEglCreateSyncKHR && mEglWaitSyncKHR) {
+            EGLint syncAttribs[] = {
+                EGL_SYNC_NATIVE_FENCE_FD_ANDROID, acquireFenceFd,
+                EGL_NONE
+            };
+            EGLSyncKHR acquireSync = mEglCreateSyncKHR(mEglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID, syncAttribs);
+            if (acquireSync != EGL_NO_SYNC_KHR) {
+                mEglWaitSyncKHR(mEglDisplay, acquireSync, 0);
+                mEglDestroySyncKHR(mEglDisplay, acquireSync);
+            } else {
+                close(acquireFenceFd);
+            }
+        } else {
+            close(acquireFenceFd);
         }
-        close(acquireFenceFd);
     }
 
     // 2. Import AHardwareBuffer to raw integer texture (executing on processing thread with valid context!)
@@ -724,8 +672,7 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear + Exposure Gain)
     glUniformMatrix3fv(glGetUniformLocation(mDebayerProgram, "uCompositeMatrix"), 1, GL_FALSE, metadata.compositeMatrix);
 
-    // 4. Selectable Log OETF & Analytical Curve Parameters
-    glUniform1i(glGetUniformLocation(mDebayerProgram, "uLogCurveType"), mLogCurveType.load());
+    // 4. Pixel-Log Analytical Curve Parameters
     glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogYb"), pixellog::LOG_YB);
     glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogBeta"), pixellog::LOG_BETA);
     glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogGamma"), pixellog::LOG_GAMMA);

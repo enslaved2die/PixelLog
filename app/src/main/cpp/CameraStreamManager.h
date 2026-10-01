@@ -26,7 +26,6 @@ public:
     bool loadDisplayLut(const char* data, size_t size);
     void setLutEnabled(bool enabled);
     void setBakeLutToEncoder(bool enabled);
-    void setLogCurveType(int32_t type);
     void setExposureGain(float gain);
     float getSceneExposureDelta() const { return mGpuPipeline.getSceneExposureDelta(); }
 

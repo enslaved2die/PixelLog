@@ -113,7 +113,7 @@ object ColorScienceUtils {
         ),
         whiteLevel = 4095.0f,
         dynamicBlackLevel = floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f),
-        bayerPattern = 2 // GBRG
+        bayerPattern = 0 // RGGB
     )
 
     val DEFAULT_CALIBRATION_ULTRAWIDE = CameraCalibration(

@@ -228,10 +228,6 @@ void CameraStreamManager::setBakeLutToEncoder(bool enabled) {
     mGpuPipeline.setBakeLutToEncoder(enabled);
 }
 
-void CameraStreamManager::setLogCurveType(int32_t type) {
-    mGpuPipeline.setLogCurveType(type);
-}
-
 void CameraStreamManager::setExposureGain(float gain) {
     mGpuPipeline.setExposureGain(gain);
 }
@@ -241,7 +237,8 @@ void CameraStreamManager::updateFrameMetadata(const SensorFrameMetadata& metadat
     mCurrentMetadata = metadata;
     if (metadata.timestampNs > 0) {
         mPendingMetadata[metadata.timestampNs] = metadata;
-        while (mPendingMetadata.size() > 45) {
+        // Keep at most 15 entries (0.5s at 30fps) to minimize allocation pressure while preserving sync
+        while (mPendingMetadata.size() > 15) {
             mPendingMetadata.erase(mPendingMetadata.begin());
         }
     }

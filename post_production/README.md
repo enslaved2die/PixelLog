@@ -104,12 +104,12 @@ When shooting with **SIGNAL: HLG** enabled in PixelLog:
 
 PixelLog provides two recording modes in the in-app settings card:
 
-1. **REC BAKE: OFF (Clean Log)**:
-   - High-bitrate 10-bit HEVC/AV1 records the raw, unclipped scene-linear $\log_2$ curve.
+1. **LUT BAKE: OFF (Clean Log)**:
+   - High-bitrate 10-bit HEVC records the raw, unclipped scene-linear $\log_2$ curve.
    - Viewfinder preview displays the active 3D LUT in real-time, but recorded bitstream is clean Log.
    - Accompanied by a frame-accurate `.json` sidecar containing sensor metadata, black/white levels, and color matrices.
 
-2. **REC BAKE: BAKED**:
+2. **LUT BAKE: BAKED**:
    - The active 3D LUT (built-in Rec.709, AgX Film, AgX Punchy, AgX HLG HDR, DWG, ACES, or imported `.cube`) is burned directly into the 10-bit recording stream during GPU Pass 2.
    - **Dynamic Color Space Signaling**:
      - When baking standard SDR display LUTs (Rec.709, AgX Base, AgX Punchy), the encoder automatically signals **BT.709 color primaries** (`COLOR_STANDARD_BT709`) and **SDR transfer** (`COLOR_TRANSFER_SDR_VIDEO`), ensuring clips look accurate on standard sRGB/Rec.709 displays without washed-out colors.

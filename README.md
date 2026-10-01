@@ -19,12 +19,14 @@
 * **Dual-Surface Zero-Stall Rendering:** Multi-threaded shared EGL contexts eliminate `eglMakeCurrent` stalls (saving 1–5 ms/frame), simultaneously routing clean 10-bit Log to `MediaCodec` and a graded preview to the viewfinder `SurfaceView`.
 * **LUT Bake-to-Encoder:** Optional GPU Pass 2 mode burns the active 3D LUT directly into the 10-bit recording stream with automatic color space signaling — SDR LUTs tag `BT.709 / SDR`, AgX HLG tags `BT.2020 / HLG` for native HDR playback up to 1000 nits.
 * **Hardware Synchronization:** Non-blocking Linux sync fences (`EGL_SYNC_NATIVE_FENCE_ANDROID`) paired with `AImageReader_acquireNextImageAsync` and `AImage_deleteAsync`, maintaining a strictly regulated 3-buffer circular pool with 33.33 ms cadence and zero race conditions.
-* **Hardened 10-Bit HEVC / AV1 Bitstream:** Tags the MP4 container with BT.2020 metadata (`KEY_COLOR_STANDARD`, `KEY_COLOR_RANGE`, `KEY_COLOR_TRANSFER`), locks $PTS == DTS$ with zero B-frames to prevent `MediaMuxer` crashes, and prevents Adobe Premiere Pro's black-crush bug.
+* **Hardened 10-Bit HEVC Bitstream:** Tags the MP4 container with BT.2020 metadata (`KEY_COLOR_STANDARD`, `KEY_COLOR_RANGE`, `KEY_COLOR_TRANSFER`), locks $PTS == DTS$ with zero B-frames to prevent `MediaMuxer` crashes, and prevents Adobe Premiere Pro's black-crush bug. Bitrate presets up to **220 Mbps**.
 * **Multi-Lens Switching:** Seamlessly routes between physical 0.5×, 1×, and 5× sensors (12 mm / 24 mm / 120 mm equiv.) with per-lens `SensorProfile` (ISO range, exposure time range, focus distance range, DCG threshold, OIS flags) cached at session open.
 * **Stabilization Modes:** OFF / OIS / **GYRO** — GYRO mode disables OIS entirely and starts `GyroflowTelemetryLogger`, writing a frame-accurate Gyroflow CSV 1.3 (`.gcsv`) sidecar for post-stabilization in Gyroflow / DaVinci Resolve. *(EIS and FULL hybrid modes are defined but not yet implemented.)* **Note:** Gyroflow lens calibration profiles for the Pixel 11 Pro 0.5×, 1×, and 5× lenses do not yet exist — footage must be processed with the "plain" preset or a user-supplied calibration until official profiles are contributed to the Gyroflow lens database.
+* **Storage Target Management:** `StorageTargetManager` discovers internal and USB-C OTG / external volumes via `StorageManager`, persists the selected target across sessions, and hot-swaps on `ACTION_MEDIA_MOUNTED/UNMOUNTED` broadcasts with emergency recording stop on mid-clip disconnection. `StorageBenchmark` runs a 32 MB fsync-validated sequential write test to rate storage as GOOD / WARN / CRITICAL relative to the selected bitrate, and `PixelLogEncoderPipeline` fires an `onStorageSlowWarning` callback when `writeSampleData` stalls exceed 80 ms.
 * **Scene Luminance Metering (Native):** `ZeroCopyImporter` performs a center-weighted 32×24 Gaussian grid photometric evaluation on Gr sensels per RAW frame, computing a temporally smoothed EV delta and exposing it via JNI. The `EvMeterView` renders a ±2 EV scale with 60/120 fps damped interpolation.
 * **Per-Sensor Hardware Profiling:** On each camera open, the HAL characteristics for all physical sensors are queried and cached into `SensorProfile` structs — including actual ISO range, exposure time range, focus distance, hyperfocal distance, and max analog sensitivity — clamping all user inputs to the physical hardware limits.
 * **JSON Sidecar Metadata:** Frame-accurate `.json` written alongside each clip containing lens, ISO, shutter, Kelvin/tint, rolling shutter skew, dynamic black/white levels, color matrices, and PixelLog curve parameters for reproducible post-production.
+
 
 ---
 
@@ -86,10 +88,12 @@ PixelLog/
 │       │   ├── nativebridge/
 │       │   │   └── PixelLogEngine.kt         # JNI bridge to libpixellog.so
 │       │   ├── recording/
-│       │   │   ├── PixelLogEncoderPipeline.kt# 10-bit HEVC/AV1 encoder, dynamic VUI, MP4 muxing
+│       │   │   ├── PixelLogEncoderPipeline.kt# 10-bit HEVC encoder, dynamic VUI, MP4 muxing
 │       │   │   ├── HevcBitstreamAuditor.kt   # SPS VUI NAL unit verification
-│       │   │   ├── Av1BitstreamAuditor.kt    # AV1 sequence header verification
 │       │   │   └── GyroflowTelemetryLogger.kt# IMU gyro/accel logger → Gyroflow CSV 1.3 .gcsv
+│       │   ├── storage/
+│       │   │   ├── StorageTargetManager.kt   # Discovers internal & USB-C OTG volumes, hot-swap
+│       │   │   └── StorageBenchmark.kt       # 32 MB fsync write benchmark → GOOD/WARN/CRITICAL
 │       │   └── ui/
 │       │       ├── CameraActivity.kt         # Cinema-style UI (dial strip, lens pill, perf bars)
 │       │       ├── CameraPreferences.kt      # SharedPreferences wrapper

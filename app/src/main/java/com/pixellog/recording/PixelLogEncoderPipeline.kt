@@ -16,10 +16,9 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
 
 /**
- * PixelLogEncoderPipeline manages 10-bit HEVC (Main 10) and AV1 (Main 10) hardware encoders,
+ * PixelLogEncoderPipeline manages 10-bit HEVC (Main 10) hardware encoders,
  * BT.2020 bitstream metadata signaling, pre-start sample queuing,
  * monotonic presentation timestamps, dynamic bitrate adjustment, and thread-safe MP4 container muxing.
  */
@@ -42,45 +41,28 @@ class PixelLogEncoderPipeline(
         private const val TAG = "PixelLogEncoder"
         private const val TIMEOUT_USEC = 10_000L
 
-        // Maximum AV1 Macroblocks (64x64) supported by Tensor G6 c2.google.av1.encoder (2040 blocks)
-        const val AV1_MAX_MB_64 = 2040
-
         /**
-         * Negotiates optimal resolution based on codec hardware capabilities:
-         * - HEVC: Full open-gate 4080x3064 / 3840x2880
-         * - AV1: Mod-64 4:3 Open-Gate 3328x2496 (52x39 = 2028 blocks <= 2040)
+         * Returns full native 4:3 open-gate resolution for HEVC hardware encoding.
          */
+        fun getOptimalResolution(sensorWidth: Int, sensorHeight: Int): Pair<Int, Int> {
+            return Pair(sensorWidth, sensorHeight)
+        }
+
         fun getOptimalResolution(codec: VideoCodec, sensorWidth: Int, sensorHeight: Int): Pair<Int, Int> {
-            return if (codec == VideoCodec.AV1) {
-                // If sensor is in binned 2032x1532 mode (e.g. 50/60fps)
-                if (sensorWidth <= 2048) {
-                    val w = (sensorWidth / 64) * 64
-                    val h = (sensorHeight / 64) * 64
-                    Pair(w, h)
-                } else if (sensorWidth <= 3500) {
-                    // EIS / FULL crop resolution (3468x2600): Align to mod-64 (3456x2560) for AV1 block limit
-                    Pair(3456, 2560)
-                } else {
-                    // Full sensor: Mod-64 3328x2496 complies with Tensor G6 2040 block limit
-                    Pair(3328, 2496)
-                }
-            } else {
-                // HEVC Hardware Encoder natively handles open gate 4080x3064 and 3468x2600
-                Pair(sensorWidth, sensorHeight)
-            }
+            return Pair(sensorWidth, sensorHeight)
         }
     }
 
     enum class VideoCodec(val mimeType: String, val displayName: String) {
-        HEVC(MediaFormat.MIMETYPE_VIDEO_HEVC, "HEVC 10-bit"),
-        AV1(MediaFormat.MIMETYPE_VIDEO_AV1, "AV1 10-bit")
+        HEVC(MediaFormat.MIMETYPE_VIDEO_HEVC, "HEVC 10-bit")
     }
 
     enum class BitratePreset(val targetBps: Int, val peakBps: Int, val label: String) {
         MBPS_50(50_000_000, 65_000_000, "50 Mbps"),
         MBPS_100(100_000_000, 120_000_000, "100 Mbps"),
         MBPS_140(140_000_000, 180_000_000, "140 Mbps"),
-        MBPS_180(180_000_000, 220_000_000, "180 Mbps")
+        MBPS_180(180_000_000, 220_000_000, "180 Mbps"),
+        MBPS_220(220_000_000, 260_000_000, "220 Mbps")
     }
 
     enum class ColorTransferMode(val label: String, val transferValue: Int) {
@@ -106,6 +88,9 @@ class PixelLogEncoderPipeline(
     // Presentation Timestamp Baseline and Monotonic Guard
     private var lastSubmittedPtsUs: Long = -1L
 
+    // Storage write latency & buffer health monitoring
+    var onStorageSlowWarning: ((backlogFrames: Int, writeLatencyMs: Long) -> Unit)? = null
+
     // Pending buffer queue for frames emitted before MediaMuxer starts
     private data class QueuedSample(
         val trackIndex: Int,
@@ -124,24 +109,8 @@ class PixelLogEncoderPipeline(
 
         mediaCodec = MediaCodec.createByCodecName(codecName)
 
-        // Effective bitrate calculation with AV1 limit clamp (Tensor G6 AV1 encoder max ~120 Mbps)
-        val effectiveTargetBitrate = if (codec == VideoCodec.AV1) {
-            min(targetBitrate, 120_000_000)
-        } else {
-            targetBitrate
-        }
-        val effectivePeakBitrate = if (codec == VideoCodec.AV1) {
-            min(peakBitrate, 140_000_000)
-        } else {
-            peakBitrate
-        }
-
         val format = MediaFormat.createVideoFormat(codec.mimeType, width, height).apply {
-            if (codec == VideoCodec.AV1) {
-                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AV1ProfileMain10)
-            } else {
-                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-            }
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
 
             // Bitstream Color Space Signaling (BT.2020 Primaries for Log, BT.709/BT.2020 for Baked LUT)
@@ -156,8 +125,8 @@ class PixelLogEncoderPipeline(
 
             // Bitrate & Rate Control
             setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
-            setInteger(MediaFormat.KEY_BIT_RATE, effectiveTargetBitrate)
-            setInteger("max-bitrate", effectivePeakBitrate)
+            setInteger(MediaFormat.KEY_BIT_RATE, targetBitrate)
+            setInteger("max-bitrate", peakBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1.0s GOP for responsive NLE scrubbing
 
@@ -227,20 +196,24 @@ class PixelLogEncoderPipeline(
                     if (!isRecording.get() && !isMuxerStarted) return@synchronized
 
                     if (!isMuxerStarted) {
-                        if (audioTrackIndex != -1) {
+                        val currentAudioTrack = audioTrackIndex
+                        if (currentAudioTrack != -1) {
                             val clone = ByteBuffer.allocateDirect(info.size)
                             clone.put(buffer)
                             clone.flip()
                             val clonedInfo = MediaCodec.BufferInfo().apply {
                                 set(0, info.size, info.presentationTimeUs, info.flags)
                             }
-                            preStartQueue.add(QueuedSample(audioTrackIndex, clone, clonedInfo))
+                            preStartQueue.add(QueuedSample(currentAudioTrack, clone, clonedInfo))
                         }
                     } else {
-                        try {
-                            mediaMuxer?.writeSampleData(audioTrackIndex, buffer, info)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error writing audio sample data", e)
+                        val currentAudioTrack = audioTrackIndex
+                        if (currentAudioTrack != -1) {
+                            try {
+                                mediaMuxer?.writeSampleData(currentAudioTrack, buffer, info)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error writing audio sample data", e)
+                            }
                         }
                     }
                 }
@@ -259,20 +232,19 @@ class PixelLogEncoderPipeline(
      * Dynamically updates encoder target bitrate on the fly.
      */
     fun setDynamicBitrate(bitrateBps: Int) {
-        val effectiveBitrate = if (codec == VideoCodec.AV1) min(bitrateBps, 120_000_000) else bitrateBps
         val params = Bundle().apply {
-            putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, effectiveBitrate)
+            putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitrateBps)
         }
         try {
             mediaCodec?.setParameters(params)
-            Log.i(TAG, "Updated dynamic bitrate to $effectiveBitrate bps")
+            Log.i(TAG, "Updated dynamic bitrate to $bitrateBps bps")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to update dynamic bitrate: ${e.message}")
         }
     }
 
     /**
-     * Asynchronous drain loop processing encoded 10-bit NAL / OBU units.
+     * Asynchronous drain loop processing encoded 10-bit NAL units.
      */
     private fun drainEncoderLoop() {
         val bufferInfo = MediaCodec.BufferInfo()
@@ -304,11 +276,7 @@ class PixelLogEncoderPipeline(
                                 val bytes = ByteArray(csd0.remaining())
                                 csd0.get(bytes)
                                 csd0.rewind()
-                                if (codec == VideoCodec.AV1) {
-                                    Av1BitstreamAuditor.auditCsd0(bytes)
-                                } else {
-                                    HevcBitstreamAuditor.auditSpsVui(bytes)
-                                }
+                                HevcBitstreamAuditor.auditSpsVui(bytes)
                             }
 
                             videoTrackIndex = mediaMuxer!!.addTrack(newFormat)
@@ -343,8 +311,22 @@ class PixelLogEncoderPipeline(
                                             set(0, bufferInfo.size, bufferInfo.presentationTimeUs, bufferInfo.flags)
                                         }
                                         preStartQueue.add(QueuedSample(videoTrackIndex, clone, clonedInfo))
+                                        if (preStartQueue.size > 20) {
+                                            onStorageSlowWarning?.invoke(preStartQueue.size, 0L)
+                                        }
                                     } else {
-                                        mediaMuxer!!.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                                        val writeStartNs = SystemClock.elapsedRealtimeNanos()
+                                        try {
+                                            mediaMuxer!!.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                                            val writeElapsedMs = (SystemClock.elapsedRealtimeNanos() - writeStartNs) / 1_000_000L
+                                            if (writeElapsedMs > 80L) {
+                                                Log.w(TAG, "Storage write stall detected: writeSampleData took ${writeElapsedMs}ms")
+                                                onStorageSlowWarning?.invoke(preStartQueue.size, writeElapsedMs)
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Failed writing video sample data", e)
+                                            onStorageSlowWarning?.invoke(preStartQueue.size, -1L)
+                                        }
                                     }
                                 }
                             }

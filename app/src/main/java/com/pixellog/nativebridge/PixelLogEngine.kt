@@ -20,7 +20,6 @@ class PixelLogEngine {
     private var pendingLutBytes: ByteArray? = null
     private var pendingLutEnabled: Boolean = true
     private var pendingBakeLutToEncoder: Boolean = false
-    private var pendingLogCurveType: Int = 0
     private var pendingExposureGain: Float = 1.0f
 
     private fun releaseNativeHandle() {
@@ -48,7 +47,6 @@ class PixelLogEngine {
             }
             nativeSetLutEnabled(nativeHandle, pendingLutEnabled)
             nativeSetBakeLutToEncoder(nativeHandle, pendingBakeLutToEncoder)
-            nativeSetLogCurveType(nativeHandle, pendingLogCurveType)
             nativeSetExposureGain(nativeHandle, pendingExposureGain)
         }
         return nativeHandle != 0L
@@ -97,13 +95,6 @@ class PixelLogEngine {
         pendingBakeLutToEncoder = enabled
         if (nativeHandle != 0L) {
             nativeSetBakeLutToEncoder(nativeHandle, enabled)
-        }
-    }
-
-    fun setLogCurveType(curveType: Int) {
-        pendingLogCurveType = curveType
-        if (nativeHandle != 0L) {
-            nativeSetLogCurveType(nativeHandle, curveType)
         }
     }
 
@@ -167,7 +158,6 @@ class PixelLogEngine {
     private external fun nativeLoadDisplayLut(handle: Long, lutBytes: ByteArray): Boolean
     private external fun nativeSetLutEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetBakeLutToEncoder(handle: Long, enabled: Boolean)
-    private external fun nativeSetLogCurveType(handle: Long, curveType: Int)
     private external fun nativeSetExposureGain(handle: Long, gain: Float)
     private external fun nativeUpdateFrameMetadata(
         handle: Long,

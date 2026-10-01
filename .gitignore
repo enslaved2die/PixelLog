@@ -27,6 +27,7 @@ __pycache__/
 
 # Test binaries & temporary logs
 tests/test_native_math
+tests/test_native_math_bin
 tests/reset_usb
 tests/logs/
 *.log

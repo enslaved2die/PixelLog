@@ -25,33 +25,33 @@ class CameraPreferencesTest {
         assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_140, cameraPreferences.bitratePreset)
         assertEquals(PixelLogEncoderPipeline.ColorTransferMode.SDR_LOG, cameraPreferences.colorTransfer)
         assertFalse(cameraPreferences.isBakeLutActive)
-        assertEquals(0, cameraPreferences.logCurveType)
         assertEquals("rec709", cameraPreferences.selectedLutId)
         assertEquals("SHUTTER", cameraPreferences.activeParamTabName)
+        assertEquals(com.pixellog.storage.StorageTargetManager.TARGET_INTERNAL_ID, cameraPreferences.storageTargetId)
     }
 
     @Test
     fun testSavingAndRestoringSettings() {
         cameraPreferences.framerate = CameraController.FramerateConfig.FPS_24
-        cameraPreferences.codec = PixelLogEncoderPipeline.VideoCodec.AV1
-        cameraPreferences.bitratePreset = PixelLogEncoderPipeline.BitratePreset.MBPS_180
+        cameraPreferences.codec = PixelLogEncoderPipeline.VideoCodec.HEVC
+        cameraPreferences.bitratePreset = PixelLogEncoderPipeline.BitratePreset.MBPS_220
         cameraPreferences.colorTransfer = PixelLogEncoderPipeline.ColorTransferMode.HLG
         cameraPreferences.isBakeLutActive = true
-        cameraPreferences.logCurveType = 1
         cameraPreferences.selectedLutId = "dwg"
         cameraPreferences.activeParamTabName = "ISO"
+        cameraPreferences.storageTargetId = "usb_samsung_t7"
 
         // Create new instance over the same SharedPreferences to simulate cold restart
         val restoredPrefs = CameraPreferences(fakePrefs)
 
         assertEquals(CameraController.FramerateConfig.FPS_24, restoredPrefs.framerate)
-        assertEquals(PixelLogEncoderPipeline.VideoCodec.AV1, restoredPrefs.codec)
-        assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_180, restoredPrefs.bitratePreset)
+        assertEquals(PixelLogEncoderPipeline.VideoCodec.HEVC, restoredPrefs.codec)
+        assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_220, restoredPrefs.bitratePreset)
         assertEquals(PixelLogEncoderPipeline.ColorTransferMode.HLG, restoredPrefs.colorTransfer)
         assertTrue(restoredPrefs.isBakeLutActive)
-        assertEquals(1, restoredPrefs.logCurveType)
         assertEquals("dwg", restoredPrefs.selectedLutId)
         assertEquals("ISO", restoredPrefs.activeParamTabName)
+        assertEquals("usb_samsung_t7", restoredPrefs.storageTargetId)
     }
 
     @Test

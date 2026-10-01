@@ -50,6 +50,9 @@ import com.pixellog.camera.LogParams
 import com.pixellog.nativebridge.PixelLogEngine
 import com.pixellog.recording.GyroflowTelemetryLogger
 import com.pixellog.recording.PixelLogEncoderPipeline
+import com.pixellog.storage.StorageBenchmark
+import com.pixellog.storage.StorageTarget
+import com.pixellog.storage.StorageTargetManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -165,22 +168,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     } catch (_: Exception) {}
                 }
                 "com.pixellog.SET_CODEC" -> {
-                    val codecStr = intent.getStringExtra("codec") ?: "HEVC"
-                    try {
-                        val codec = PixelLogEncoderPipeline.VideoCodec.valueOf(codecStr)
-                        runOnUiThread {
-                            currentCodec = codec
-                            prefs.codec = codec
-                            updateSettingsDisplay()
-                        }
-                    } catch (_: Exception) {}
-                }
-                "com.pixellog.SET_CURVE" -> {
-                    val curve = intent.getIntExtra("curve", 0).coerceIn(0, 2)
                     runOnUiThread {
-                        currentLogCurveType = curve
-                        prefs.logCurveType = curve
-                        engine.setLogCurveType(curve)
+                        currentCodec = PixelLogEncoderPipeline.VideoCodec.HEVC
+                        prefs.codec = currentCodec
                         updateSettingsDisplay()
                     }
                 }
@@ -317,7 +307,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     // ── Camera mode state ──
     private var isLutActive = true
-    private var currentLogCurveType = 0
 
     // ── Active parameter tab ──
     private enum class ParamTab { WB, SHUTTER, EV, ISO }
@@ -354,6 +343,23 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
+    private val storageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            runOnUiThread {
+                val available = storageTargetManager.getAvailableTargets()
+                val currentTargetStillValid = available.any { it.id == currentStorageTarget?.id }
+                if (isRecording && currentStorageTarget?.isPrimary == false && !currentTargetStillValid) {
+                    Log.w(TAG, "Active recording storage disconnected! Emergency stop.")
+                    Toast.makeText(this@CameraActivity, "External storage disconnected! Stopping recording...", Toast.LENGTH_LONG).show()
+                    stopRecording()
+                }
+                currentStorageTarget = storageTargetManager.resolveTarget(prefs.storageTargetId)
+                updateSettingsDisplay()
+                updateRemainingTime()
+            }
+        }
+    }
+
     // ── View references ──
     private lateinit var viewfinderSurface: SurfaceView
     private lateinit var focusExposureOverlay: FocusExposureOverlayView
@@ -371,20 +377,28 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var settingsBackdrop: View
     private lateinit var textSettingsFps: TextView
     private lateinit var textSettingsMbps: TextView
-    private lateinit var textSettingsCodec: TextView
-    private lateinit var textSettingsResolution: TextView
-    private lateinit var textSettingsCurve: TextView
-    private lateinit var textSettingsLut: TextView
-    private lateinit var textSettingsTorch: TextView
-    private lateinit var textSettingsMic: TextView
     private lateinit var textSettingsTransfer: TextView
     private lateinit var textSettingsBakeLut: TextView
-    private lateinit var textSettingsSidecar: TextView
+    private lateinit var textSettingsLut: TextView
     private lateinit var textSettingsImportLut: TextView
-    private lateinit var textSettingsStab: TextView
+    private lateinit var textSettingsMic: TextView
+    private lateinit var textSettingsSidecar: TextView
+    private lateinit var textSettingsStorage: TextView
+    private lateinit var textSettingsStorageSpeed: TextView
+    private lateinit var textSettingsResolution: TextView
 
-    // Stabilization toggle (above Lens Selector, matching Penpot OIS element)
+    // Top HUD storage badge & low speed warning
+    private lateinit var textStorageBadge: TextView
+    private lateinit var textStorageWarning: TextView
+
+    // Storage Target & Benchmark Manager
+    private lateinit var storageTargetManager: StorageTargetManager
+    private var currentStorageTarget: StorageTarget? = null
+    private var isBenchmarkingStorage = false
+
+    // Main UI controls: Stabilization & Torch (top bar right of viewfinder)
     private lateinit var btnStabToggle: TextView
+    private lateinit var btnTorchToggle: ImageButton
     private var gyroTelemetryLogger: GyroflowTelemetryLogger? = null
 
     // Lens buttons
@@ -553,6 +567,27 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         cameraController = CameraController(this, engine)
         audioInputManager = AudioInputManager(this)
         prefs = CameraPreferences(this)
+        storageTargetManager = StorageTargetManager(this)
+        currentStorageTarget = storageTargetManager.resolveTarget(prefs.storageTargetId)
+
+        val storageFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_MEDIA_MOUNTED)
+            addAction(Intent.ACTION_MEDIA_UNMOUNTED)
+            addAction(Intent.ACTION_MEDIA_REMOVED)
+            addAction(Intent.ACTION_MEDIA_BAD_REMOVAL)
+            addAction(Intent.ACTION_MEDIA_EJECT)
+            addDataScheme("file")
+        }
+        try {
+            ContextCompat.registerReceiver(
+                this,
+                storageReceiver,
+                storageFilter,
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register storageReceiver", e)
+        }
 
         // Initialize active ISO and shutter speeds based on the default sensor and framerate
         updateActiveIsoValues()
@@ -564,7 +599,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         currentColorTransfer = prefs.colorTransfer
         isBakeLutActive = prefs.isBakeLutActive
         isSidecarEnabled = prefs.isSidecarEnabled
-        currentLogCurveType = prefs.logCurveType
         
         // Camera controls (Focus, Shutter, WB, EV, ISO) start fresh in Auto mode on app start
         val default180Idx = get180ShutterIndexForFramerate(prefs.framerate)
@@ -658,19 +692,23 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         settingsBackdrop = findViewById(R.id.settingsBackdrop)
         textSettingsFps = findViewById(R.id.textSettingsFps)
         textSettingsMbps = findViewById(R.id.textSettingsMbps)
-        textSettingsCodec = findViewById(R.id.textSettingsCodec)
-        textSettingsResolution = findViewById(R.id.textSettingsResolution)
-        textSettingsCurve = findViewById(R.id.textSettingsCurve)
-        textSettingsLut = findViewById(R.id.textSettingsLut)
-        textSettingsTorch = findViewById(R.id.textSettingsTorch)
-        textSettingsMic = findViewById(R.id.textSettingsMic)
         textSettingsTransfer = findViewById(R.id.textSettingsTransfer)
         textSettingsBakeLut = findViewById(R.id.textSettingsBakeLut)
-        textSettingsSidecar = findViewById(R.id.textSettingsSidecar)
+        textSettingsLut = findViewById(R.id.textSettingsLut)
         textSettingsImportLut = findViewById(R.id.textSettingsImportLut)
-        textSettingsStab = findViewById(R.id.textSettingsStab)
+        textSettingsMic = findViewById(R.id.textSettingsMic)
+        textSettingsSidecar = findViewById(R.id.textSettingsSidecar)
+        textSettingsStorage = findViewById(R.id.textSettingsStorage)
+        textSettingsStorageSpeed = findViewById(R.id.textSettingsStorageSpeed)
+        textSettingsResolution = findViewById(R.id.textSettingsResolution)
+
+        textStorageBadge = findViewById(R.id.textStorageBadge)
+        textStorageWarning = findViewById(R.id.textStorageWarning)
 
         btnStabToggle = findViewById(R.id.btnStabToggle)
+        btnTorchToggle = findViewById(R.id.btnTorchToggle)
+        btnTorchToggle.setOnClickListener { toggleTorch() }
+        updateTorchUI()
 
         btnLens12 = findViewById(R.id.btnLens12)
         btnLens24 = findViewById(R.id.btnLens24)
@@ -704,11 +742,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
         engine.setDisplaySurface(holder.surface)
         engine.setBakeLutToEncoder(isBakeLutActive)
-        engine.setLogCurveType(currentLogCurveType)
         refreshLutCatalog()
         val savedLutId = prefs.selectedLutId
         val targetIdx = lutCatalog.indexOfFirst { it.id == savedLutId }.takeIf { it >= 0 } ?: 0
         selectLut(targetIdx)
+        updateTorchUI()
         updateSettingsDisplay()
         updateLensButtonsUi(cameraController.currentLens)
         updateAutoManualToggleForActiveTab()
@@ -999,6 +1037,20 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
+    private fun toggleTorch() {
+        cameraController.isTorchEnabled = !cameraController.isTorchEnabled
+        updateTorchUI()
+    }
+
+    private fun updateTorchUI() {
+        val color = if (cameraController.isTorchEnabled) {
+            ContextCompat.getColor(this, R.color.cyan_accent)
+        } else {
+            ContextCompat.getColor(this, R.color.text_secondary)
+        }
+        btnTorchToggle.setColorFilter(color)
+    }
+
     // ── Record Button ──
 
     private fun setupRecordButton() {
@@ -1013,12 +1065,16 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun startRecording() {
         try {
-            val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-            val pixDir = File(moviesDir, "PixelLog")
+            val target = currentStorageTarget ?: storageTargetManager.getInternalTarget()
+            if (target.availableBytes < 100L * 1024L * 1024L) {
+                Toast.makeText(this, "Storage full: less than 100MB available", Toast.LENGTH_LONG).show()
+                return
+            }
+            val pixDir = target.recordingDirectory
             pixDir.mkdirs()
 
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val codecTag = if (currentCodec == PixelLogEncoderPipeline.VideoCodec.AV1) "AV1" else "HEVC"
+            val codecTag = "HEVC"
             val rawLutItem = lutCatalog.getOrNull(currentLutIndex)
             val activeLutItem = getEffectiveLutItem(rawLutItem)
             val isBakeValid = isBakeLutActive && activeLutItem != null && activeLutItem.id != "clean"
@@ -1056,6 +1112,16 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             engine.setBakeLutToEncoder(isBakeValid)
             val encoderSurface = encoderPipeline!!.prepare()
             engine.setEncoderSurface(encoderSurface)
+
+            encoderPipeline!!.onStorageSlowWarning = { backlogFrames, latencyMs ->
+                runOnUiThread {
+                    if (isRecording) {
+                        textStorageWarning.visibility = View.VISIBLE
+                        textStorageWarning.text = if (latencyMs > 0) "SLOW MEDIA (${latencyMs}ms)" else "BUFFER DELAY ($backlogFrames)"
+                    }
+                }
+            }
+
             encoderPipeline!!.startRecording()
 
             if (cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO) {
@@ -1087,6 +1153,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         isRecording = false
         performanceMonitor?.isRecording = false
         mainHandler.removeCallbacks(timecodeRunnable)
+        textStorageWarning.visibility = View.GONE
 
         btnRecord.setBackgroundResource(R.drawable.bg_record_button)
 
@@ -1149,7 +1216,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             settingsModalOverlay.visibility = View.GONE
         }
 
-        // FPS tap cycles
+        // Row 1: FPS tap cycles
         findViewById<View>(R.id.settingsFpsGroup).setOnClickListener {
             val allConfigs = CameraController.FramerateConfig.values()
             val nextIndex = (cameraController.currentFramerate.ordinal + 1) % allConfigs.size
@@ -1157,7 +1224,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             applyFramerate(nextConfig)
         }
 
-        // Bitrate tap cycles
+        // Row 1: Bitrate tap cycles
         findViewById<View>(R.id.settingsBitrateGroup).setOnClickListener {
             val presets = PixelLogEncoderPipeline.BitratePreset.values()
             val nextIdx = (currentBitratePreset.ordinal + 1) % presets.size
@@ -1165,36 +1232,10 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             prefs.bitratePreset = currentBitratePreset
             encoderPipeline?.setDynamicBitrate(currentBitratePreset.targetBps)
             updateSettingsDisplay()
+            updateRemainingTime()
         }
 
-        // Codec tap toggles
-        textSettingsCodec.setOnClickListener {
-            currentCodec = if (currentCodec == PixelLogEncoderPipeline.VideoCodec.HEVC) {
-                PixelLogEncoderPipeline.VideoCodec.AV1
-            } else {
-                PixelLogEncoderPipeline.VideoCodec.HEVC
-            }
-            prefs.codec = currentCodec
-            updateSettingsDisplay()
-        }
-
-        // Curve tap cycles (Pixel-Log -> S-Log3 -> Apple Log)
-        findViewById<View>(R.id.settingsCurveGroup).setOnClickListener {
-            currentLogCurveType = (currentLogCurveType + 1) % 3
-            prefs.logCurveType = currentLogCurveType
-            engine.setLogCurveType(currentLogCurveType)
-            updateSettingsDisplay()
-        }
-
-        // LUT selection (Cycles through built-in, custom imported, and CLEAN bypass)
-        findViewById<View>(R.id.settingsLutGroup).setOnClickListener {
-            if (lutCatalog.isNotEmpty()) {
-                val nextIdx = (currentLutIndex + 1) % lutCatalog.size
-                selectLut(nextIdx)
-            }
-        }
-
-        // Signal / Metadata Transfer Tag toggle (LOG <-> HLG)
+        // Row 1: Signal / Metadata Transfer Tag toggle (LOG <-> HLG)
         findViewById<View>(R.id.settingsTransferGroup).setOnClickListener {
             currentColorTransfer = if (currentColorTransfer == PixelLogEncoderPipeline.ColorTransferMode.SDR_LOG) {
                 PixelLogEncoderPipeline.ColorTransferMode.HLG
@@ -1206,7 +1247,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             updateSettingsDisplay()
         }
 
-        // Bake LUT to recording toggle (OFF <-> BAKED)
+        // Row 2: Bake LUT to recording toggle (OFF <-> BAKED)
         findViewById<View>(R.id.settingsBakeLutGroup).setOnClickListener {
             isBakeLutActive = !isBakeLutActive
             prefs.isBakeLutActive = isBakeLutActive
@@ -1215,7 +1256,15 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             updateSettingsDisplay()
         }
 
-        // Custom .cube LUT import launcher
+        // Row 2: LUT selection (Cycles through built-in, custom imported, and CLEAN bypass)
+        findViewById<View>(R.id.settingsLutGroup).setOnClickListener {
+            if (lutCatalog.isNotEmpty()) {
+                val nextIdx = (currentLutIndex + 1) % lutCatalog.size
+                selectLut(nextIdx)
+            }
+        }
+
+        // Row 2: Custom .cube LUT import launcher
         findViewById<View>(R.id.settingsImportLutGroup).setOnClickListener {
             try {
                 lutPickerLauncher.launch("*/*")
@@ -1225,28 +1274,22 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
         }
 
-        // Torch toggle (OFF / ON)
-        findViewById<View>(R.id.settingsTorchGroup).setOnClickListener {
-            cameraController.isTorchEnabled = !cameraController.isTorchEnabled
-            updateSettingsDisplay()
-        }
-
-        // Mic cycle (AUTO -> Built-in -> External -> ...)
+        // Row 3: Mic cycle (AUTO -> Built-in -> External -> ...)
         findViewById<View>(R.id.settingsMicGroup).setOnClickListener {
             audioInputManager.cycleNextDevice()
             updateSettingsDisplay()
         }
 
-        // Sidecar JSON toggle (OFF / ON)
+        // Row 3: Sidecar JSON toggle (OFF / ON)
         findViewById<View>(R.id.settingsSidecarGroup).setOnClickListener {
             isSidecarEnabled = !isSidecarEnabled
             prefs.isSidecarEnabled = isSidecarEnabled
             updateSettingsDisplay()
         }
 
-        // Stabilization tap toggles (OFF -> OIS -> GYRO -> OFF)
-        findViewById<View>(R.id.settingsStabGroup).setOnClickListener {
-            cycleStabilizationMode()
+        // Row 3: Storage destination cycle (INTERNAL -> USB 1 -> USB 2 -> ...)
+        findViewById<View>(R.id.settingsStorageGroup).setOnClickListener {
+            cycleStorageTarget()
         }
 
         updateSettingsDisplay()
@@ -1258,11 +1301,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             .replace("MBPS", "").trim().let {
                 it.filter { c -> c.isDigit() }.ifEmpty { "140" }
             }
-        textSettingsCodec.text = if (currentCodec == PixelLogEncoderPipeline.VideoCodec.AV1) "AV1" else "HEVC"
         textSettingsResolution.text = "${cameraController.activeWidth} × ${cameraController.activeHeight}"
-
-        val curveNames = arrayOf("PIXEL-LOG", "S-LOG3", "APPLE LOG")
-        textSettingsCurve.text = curveNames[currentLogCurveType.coerceIn(0, 2)]
 
         val rawLutItem = lutCatalog.getOrNull(currentLutIndex)
         val effectiveLutItem = getEffectiveLutItem(rawLutItem)
@@ -1289,7 +1328,6 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
         )
 
-        textSettingsTorch.text = if (cameraController.isTorchEnabled) "ON" else "OFF"
         textSettingsMic.text = if (audioInputManager.isAutoRouting) {
             "AUTO"
         } else {
@@ -1301,16 +1339,60 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             if (isSidecarEnabled) ContextCompat.getColor(this, R.color.cyan_accent) else Color.WHITE
         )
 
-        textSettingsStab.text = cameraController.stabilizationMode.label
-        textSettingsStab.setTextColor(
-            when (cameraController.stabilizationMode) {
-                CameraController.StabilizationMode.OFF -> ContextCompat.getColor(this, R.color.text_secondary)
-                CameraController.StabilizationMode.OIS -> Color.WHITE
-                CameraController.StabilizationMode.GYRO -> ContextCompat.getColor(this, R.color.cyan_accent)
-                CameraController.StabilizationMode.EIS -> Color.parseColor("#FFD54F")
-                CameraController.StabilizationMode.FULL -> Color.parseColor("#81C784")
+        val target = currentStorageTarget ?: storageTargetManager.getInternalTarget()
+        textSettingsStorage.text = target.name
+        textStorageBadge.text = if (target.isPrimary) "INT" else "USB"
+    }
+
+    private fun cycleStorageTarget() {
+        if (isRecording) {
+            Toast.makeText(this, "Cannot switch storage while recording", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val targets = storageTargetManager.getAvailableTargets()
+        if (targets.isEmpty()) return
+        val currentIdx = targets.indexOfFirst { it.id == currentStorageTarget?.id }.takeIf { it >= 0 } ?: 0
+        val nextIdx = (currentIdx + 1) % targets.size
+        currentStorageTarget = targets[nextIdx]
+        prefs.storageTargetId = currentStorageTarget!!.id
+        updateSettingsDisplay()
+        updateRemainingTime()
+        runStorageSpeedTest(currentStorageTarget!!)
+    }
+
+    private fun runStorageSpeedTest(target: StorageTarget) {
+        if (isBenchmarkingStorage) return
+        isBenchmarkingStorage = true
+        textSettingsStorageSpeed.text = "Testing..."
+        textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+
+        Thread {
+            try {
+                val result = StorageBenchmark.runBenchmark(
+                    directory = target.recordingDirectory,
+                    targetBitrateBps = currentBitratePreset.targetBps
+                )
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    textSettingsStorageSpeed.text = result.message
+                    when (result.status) {
+                        StorageBenchmark.SpeedStatus.GOOD -> {
+                            textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.audio_meter_green))
+                        }
+                        StorageBenchmark.SpeedStatus.WARN -> {
+                            textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.audio_meter_orange))
+                            Toast.makeText(this, "Storage Warning: ${result.message}", Toast.LENGTH_SHORT).show()
+                        }
+                        StorageBenchmark.SpeedStatus.CRITICAL -> {
+                            textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.rec_red))
+                            Toast.makeText(this, "⚠️ SLOW STORAGE: ${result.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            } finally {
+                isBenchmarkingStorage = false
             }
-        )
+        }.start()
     }
 
     // ── Parameter Tabs ──
@@ -1891,13 +1973,13 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun updateRemainingTime() {
         try {
-            val moviesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES)
-            val stat = StatFs(moviesDir.absolutePath)
-            val availableBytes = stat.availableBlocksLong * stat.blockSizeLong
+            val target = currentStorageTarget ?: storageTargetManager.getInternalTarget()
+            val availableBytes = target.availableBytes
             val bytesPerSecond = currentBitratePreset.targetBps / 8L
             val remainingSeconds = if (bytesPerSecond > 0) availableBytes / bytesPerSecond else 0L
             val remainingMinutes = (remainingSeconds / 60).toInt()
             textRemainingMinutes.text = remainingMinutes.toString()
+            textStorageBadge.text = if (target.isPrimary) "INT" else "USB"
         } catch (e: Exception) {
             textRemainingMinutes.text = "–"
         }
@@ -2106,6 +2188,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
         try {
             unregisterReceiver(testCommandReceiver)
+        } catch (_: Exception) {}
+        try {
+            unregisterReceiver(storageReceiver)
         } catch (_: Exception) {}
         performanceMonitor?.destroy()
         performanceMonitor = null

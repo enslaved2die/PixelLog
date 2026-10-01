@@ -109,7 +109,7 @@ class ColorScienceTest {
         val calibWide = ColorScienceUtils.getDefaultCalibration("2")
         assertEquals(4095.0f, calibWide.whiteLevel, 1e-4f)
         assertEquals(256.0f, calibWide.dynamicBlackLevel[0], 1e-4f)
-        assertEquals(2, calibWide.bayerPattern) // GBRG
+        assertEquals(0, calibWide.bayerPattern) // RGGB
 
         val calibUW = ColorScienceUtils.getDefaultCalibration("3")
         assertEquals(1023.0f, calibUW.whiteLevel, 1e-4f)

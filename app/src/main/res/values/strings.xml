@@ -6,7 +6,6 @@
     <string name="label_min">MIN</string>
     <string name="label_settings">Settings</string>
     <string name="label_hevc">HEVC</string>
-    <string name="label_av1">AV1</string>
     <string name="label_wb">WB</string>
     <string name="label_shutter">SHUTTER</string>
     <string name="label_ev">EV</string>
@@ -27,9 +26,10 @@
     <string name="label_torch">TORCH</string>
     <string name="label_mic">MIC</string>
     <string name="label_transfer">SIGNAL</string>
-    <string name="label_bake_lut">REC BAKE</string>
+    <string name="label_bake_lut">LUT BAKE</string>
     <string name="label_sidecar">SIDECAR</string>
     <string name="label_import_lut">IMPORT</string>
     <string name="label_stabilization">STABILIZATION</string>
+    <string name="label_storage">STORAGE</string>
     <string name="content_desc_ev_meter">Exposure Level Meter</string>
 </resources>

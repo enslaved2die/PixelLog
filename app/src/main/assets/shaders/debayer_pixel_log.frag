@@ -19,7 +19,6 @@ uniform int uHasLensShading;        // 1 if lens shading map is available, 0 oth
 // Color Science Uniforms (Phase 2 & Phase 3)
 uniform vec3 uNeutralColorPoint;    // SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
 uniform mat3 uCompositeMatrix;      // Sensor -> Bradford -> Rec.2020 Exposed (column-major)
-uniform int uLogCurveType;          // 0: Pixel-Log, 1: Sony S-Log3, 2: Apple Log
 
 // Pixel-Log Analytical Curve Parameters (populated from log_params.json)
 uniform float uLogYb;
@@ -30,18 +29,15 @@ uniform float uLogS;
 
 // Returns CFA Channel Index: 0: R, 1: Gr, 2: Gb, 3: B
 int getCfaChannel(ivec2 p, int pattern) {
-    int px = p.x & 1;
-    int py = p.y & 1;
-    int idx = (py << 1) | px; // 0:(0,0), 1:(1,0), 2:(0,1), 3:(1,1)
-
+    int idx = ((p.y & 1) << 1) | (p.x & 1);
     if (pattern == 0) {
-        return (idx == 0) ? 0 : (idx == 1) ? 1 : (idx == 2) ? 2 : 3; // RGGB
+        return idx;
     } else if (pattern == 1) {
-        return (idx == 0) ? 1 : (idx == 1) ? 0 : (idx == 2) ? 3 : 2; // GRBG
+        return (idx == 0) ? 1 : (idx == 1) ? 0 : (idx == 2) ? 3 : 2;
     } else if (pattern == 2) {
-        return (idx == 0) ? 2 : (idx == 1) ? 3 : (idx == 2) ? 0 : 1; // GBRG
+        return (idx == 0) ? 2 : (idx == 1) ? 3 : (idx == 2) ? 0 : 1;
     } else {
-        return (idx == 0) ? 3 : (idx == 1) ? 2 : (idx == 2) ? 1 : 0; // BGGR
+        return 3 - idx;
     }
 }
 
@@ -71,33 +67,6 @@ vec3 applyPixelLogOETF(vec3 x) {
     vec3 toeVal = vec3(uLogYb) + vec3(uLogS) * x;
     vec3 isNonNeg = step(vec3(0.0), x);
     return mix(toeVal, logVal, isNonNeg);
-}
-
-// Sony S-Log3 OETF (Fallback)
-float sLog3Single(float x) {
-    if (x >= 0.01125) {
-        return (420.0 + (log2((x + 0.01) / 0.19) / 3.32192809) * 261.5) / 1023.0;
-    } else {
-        return (x * (171.2102946929 - 95.0) / 0.01125 + 95.0) / 1023.0;
-    }
-}
-vec3 applySLog3OETF(vec3 R) {
-    return vec3(sLog3Single(max(R.r, 0.0)), sLog3Single(max(R.g, 0.0)), sLog3Single(max(R.b, 0.0)));
-}
-
-// Apple Log OETF (Fallback)
-float appleLogSingle(float R) {
-    if (R >= 0.01) {
-        return 0.185638 * log(5.367655 * R + 0.092809) + 0.677208;
-    } else if (R >= -0.05641088) {
-        float diff = R - (-0.05641088);
-        return 47.28711236 * diff * diff;
-    } else {
-        return 0.0;
-    }
-}
-vec3 applyAppleLogOETF(vec3 R) {
-    return vec3(appleLogSingle(R.r), appleLogSingle(R.g), appleLogSingle(R.b));
 }
 
 void main() {
@@ -159,15 +128,8 @@ void main() {
     // Evaluated via pre-composed composite matrix
     vec3 linearWorking = uCompositeMatrix * wbRgb;
 
-    // Step 8: Apply Selected Log OETF
-    vec3 logOutput;
-    if (uLogCurveType == 1) {
-        logOutput = applySLog3OETF(linearWorking);
-    } else if (uLogCurveType == 2) {
-        logOutput = applyAppleLogOETF(linearWorking);
-    } else {
-        logOutput = applyPixelLogOETF(linearWorking);
-    }
+    // Step 8: Apply Pure Pixel-Log OETF
+    vec3 logOutput = applyPixelLogOETF(linearWorking);
 
     // Final 10-bit output clamp [0.0, 1.0]
     outLogColor = vec4(clamp(logOutput, 0.0, 1.0), 1.0);

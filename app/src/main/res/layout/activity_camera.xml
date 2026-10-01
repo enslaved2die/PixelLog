@@ -68,6 +68,32 @@
             android:text="@string/label_min"
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/textStorageBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:fontFamily="@font/gabarito"
+            android:text="INT"
+            android:textColor="@color/cyan_accent"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/textStorageWarning"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:background="@color/rec_red_dark"
+            android:fontFamily="@font/gabarito"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="SLOW MEDIA"
+            android:textColor="@color/white"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
     </LinearLayout>
 
     <!-- Performance Bars: CPU / RAM / GPU matching Penpot design -->
@@ -148,21 +174,6 @@
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Timecode (left of settings icon) -->
-    <TextView
-        android:id="@+id/textTimecode"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginEnd="12dp"
-        android:fontFamily="monospace"
-        android:typeface="monospace"
-        android:text="00:00:00:00"
-        android:textColor="@color/text_secondary"
-        android:textSize="12sp"
-        app:layout_constraintBottom_toBottomOf="@id/btnSettings"
-        app:layout_constraintEnd_toStartOf="@id/btnSettings"
-        app:layout_constraintTop_toTopOf="@id/btnSettings" />
-
     <!-- Stabilization Mode Toggle (OFF / OIS / GYRO) as in Penpot design (element called OIS) -->
     <TextView
         android:id="@+id/btnStabToggle"
@@ -178,6 +189,37 @@
         android:textStyle="bold"
         app:layout_constraintStart_toEndOf="@id/viewfinderSurface"
         app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Torch Toggle Icon (placed on Main Camera UI between Stabilisation and Timecode) -->
+    <ImageButton
+        android:id="@+id/btnTorchToggle"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="16dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/label_torch"
+        android:padding="6dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_torch"
+        app:tint="@color/text_secondary"
+        app:layout_constraintBottom_toBottomOf="@id/btnStabToggle"
+        app:layout_constraintStart_toEndOf="@id/btnStabToggle"
+        app:layout_constraintTop_toTopOf="@id/btnStabToggle" />
+
+    <!-- Timecode (left of settings icon) -->
+    <TextView
+        android:id="@+id/textTimecode"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="12dp"
+        android:fontFamily="monospace"
+        android:typeface="monospace"
+        android:text="00:00:00:00"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        app:layout_constraintBottom_toBottomOf="@id/btnSettings"
+        app:layout_constraintEnd_toStartOf="@id/btnSettings"
+        app:layout_constraintTop_toTopOf="@id/btnSettings" />
 
     <!-- Vertical Lens Selector Pill (middle right, left of focus dial) -->
     <LinearLayout
@@ -479,7 +521,7 @@
                 android:textSize="22sp"
                 android:textStyle="bold" />
 
-            <!-- FPS + Bitrate + Codec Row -->
+            <!-- Row 1: FPS, MBPS, SIGNAL -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -542,9 +584,9 @@
                         android:textStyle="bold" />
                 </LinearLayout>
 
-                <!-- Codec -->
+                <!-- SIGNAL (LOG / HLG) -->
                 <LinearLayout
-                    android:id="@+id/settingsCodecGroup"
+                    android:id="@+id/settingsTransferGroup"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -555,24 +597,23 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:text="CODEC"
+                        android:text="@string/label_transfer"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
 
                     <TextView
-                        android:id="@+id/textSettingsCodec"
+                        android:id="@+id/textSettingsTransfer"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:gravity="center"
-                        android:text="@string/label_hevc"
-                        android:textColor="@color/white"
+                        android:text="LOG"
+                        android:textColor="@color/cyan_accent"
                         android:textSize="20sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Row 2: Cinema Processing & Hardware (Curve, LUT, Torch, Mic) -->
+            <!-- Row 2: BAKE, LUT, IMPORT LUT -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -580,12 +621,12 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <!-- Curve -->
+                <!-- BAKE LUT -->
                 <LinearLayout
-                    android:id="@+id/settingsCurveGroup"
+                    android:id="@+id/settingsBakeLutGroup"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1.2"
+                    android:layout_weight="1"
                     android:gravity="center_horizontal"
                     android:orientation="vertical">
 
@@ -593,18 +634,18 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:text="@string/label_curve"
+                        android:text="@string/label_bake_lut"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
 
                     <TextView
-                        android:id="@+id/textSettingsCurve"
+                        android:id="@+id/textSettingsBakeLut"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:text="PIXEL-LOG"
-                        android:textColor="@color/cyan_accent"
-                        android:textSize="14sp"
+                        android:text="OFF"
+                        android:textColor="@color/white"
+                        android:textSize="18sp"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -632,156 +673,7 @@
                         android:fontFamily="@font/gabarito"
                         android:text="REC.709"
                         android:textColor="@color/white"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <!-- Torch -->
-                <LinearLayout
-                    android:id="@+id/settingsTorchGroup"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="0.8"
-                    android:gravity="center_horizontal"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="@string/label_torch"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/textSettingsTorch"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="OFF"
-                        android:textColor="@color/white"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <!-- Mic -->
-                <LinearLayout
-                    android:id="@+id/settingsMicGroup"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:gravity="center_horizontal"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="@string/label_mic"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/textSettingsMic"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="AUTO"
-                        android:textColor="@color/cyan_accent"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- Row 3: Signal & Color Export (Signal Tag, Bake LUT, Import LUT) -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <!-- Metadata Signal Tag (LOG / HLG) -->
-                <LinearLayout
-                    android:id="@+id/settingsTransferGroup"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:gravity="center_horizontal"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="@string/label_transfer"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/textSettingsTransfer"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="LOG"
-                        android:textColor="@color/cyan_accent"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <!-- Bake LUT -->
-                <LinearLayout
-                    android:id="@+id/settingsBakeLutGroup"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:gravity="center_horizontal"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="@string/label_bake_lut"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/textSettingsBakeLut"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="OFF"
-                        android:textColor="@color/white"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <!-- Metadata Sidecar JSON Toggle -->
-                <LinearLayout
-                    android:id="@+id/settingsSidecarGroup"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:gravity="center_horizontal"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="@string/label_sidecar"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/textSettingsSidecar"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:fontFamily="@font/gabarito"
-                        android:text="OFF"
-                        android:textColor="@color/white"
-                        android:textSize="14sp"
+                        android:textSize="18sp"
                         android:textStyle="bold" />
                 </LinearLayout>
 
@@ -809,12 +701,12 @@
                         android:fontFamily="@font/gabarito"
                         android:text="+ CUBE"
                         android:textColor="@color/cyan_accent"
-                        android:textSize="14sp"
+                        android:textSize="18sp"
                         android:textStyle="bold" />
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- Row 4: Stabilization Mode -->
+            <!-- Row 3: MIC, SIDECAR, STORAGE -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -822,8 +714,9 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
+                <!-- Mic -->
                 <LinearLayout
-                    android:id="@+id/settingsStabGroup"
+                    android:id="@+id/settingsMicGroup"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
@@ -834,19 +727,84 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:text="@string/label_stabilization"
+                        android:text="@string/label_mic"
                         android:textColor="@color/text_secondary"
                         android:textSize="13sp" />
 
                     <TextView
-                        android:id="@+id/textSettingsStab"
+                        android:id="@+id/textSettingsMic"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
-                        android:text="OIS"
+                        android:text="AUTO"
                         android:textColor="@color/cyan_accent"
-                        android:textSize="14sp"
+                        android:textSize="18sp"
                         android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Metadata Sidecar JSON Toggle -->
+                <LinearLayout
+                    android:id="@+id/settingsSidecarGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_sidecar"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsSidecar"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="OFF"
+                        android:textColor="@color/white"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Storage Destination & Speed Group -->
+                <LinearLayout
+                    android:id="@+id/settingsStorageGroup"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center_horizontal"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="@string/label_storage"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp" />
+
+                    <TextView
+                        android:id="@+id/textSettingsStorage"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="INTERNAL"
+                        android:textColor="@color/white"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/textSettingsStorageSpeed"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:text="Ready"
+                        android:textColor="@color/audio_meter_green"
+                        android:textSize="11sp" />
                 </LinearLayout>
             </LinearLayout>
 

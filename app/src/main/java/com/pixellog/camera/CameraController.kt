@@ -201,9 +201,9 @@ class CameraController(
 
     // Multi-Lens Physical Camera Map
     private var ultrawideCameraId: String? = null
-    private var wideCameraId: String = "2"
+    private var wideCameraId: String = "0"
     private var teleCameraId: String? = null
-    var currentPhysicalCameraId: String = "2"
+    var currentPhysicalCameraId: String = "0"
         private set
     private val calibrationCache = mutableMapOf<String, CameraCalibration>()
     private val sensorProfiles = mutableMapOf<String, SensorProfile>()
@@ -487,7 +487,8 @@ class CameraController(
                         teleCameraId = id
                         Log.i(TAG, "Discovered Telephoto Camera: ID $id (${minFocal}mm)")
                     } else {
-                        if (id != "0" || wideCameraId == "0") {
+                        // Prioritize Camera ID "0" (or assign first discovered wide sensor)
+                        if (id == "0" || wideCameraId != "0") {
                             wideCameraId = id
                         }
                         Log.i(TAG, "Discovered Wide Camera: ID $id (${minFocal}mm)")
@@ -754,6 +755,13 @@ class CameraController(
                     bayerPattern = cfa
                     engine.initialize(rawInitW, rawInitH, bayerPattern)
                     Log.i(TAG, "Reinitialized GPU pipeline for PhysCam $targetPhysId: ${rawInitW}x${rawInitH} (active ${activeWidth}x${activeHeight}), CFA $bayerPattern")
+                }
+
+                // Immediately reset EMA black level and white balance filters to target calibration
+                // to eliminate multi-frame shadow crushing or color bias across sensor switches
+                currentCalibration?.let { calib ->
+                    lastDynamicBlackLevel = calib.dynamicBlackLevel.clone()
+                    lastWhiteLevel = calib.whiteLevel
                 }
 
                 createOpenGateSession()
