@@ -249,4 +249,14 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetExposureGain(
     manager->setExposureGain(gain);
 }
 
+JNIEXPORT jfloat JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeGetSceneExposureDelta(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jlong handle) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return 0.0f;
+    return manager->getSceneExposureDelta();
+}
+
 } // extern "C"

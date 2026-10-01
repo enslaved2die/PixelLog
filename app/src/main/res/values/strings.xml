@@ -31,4 +31,5 @@
     <string name="label_sidecar">SIDECAR</string>
     <string name="label_import_lut">IMPORT</string>
     <string name="label_stabilization">STABILIZATION</string>
+    <string name="content_desc_ev_meter">Exposure Level Meter</string>
 </resources>

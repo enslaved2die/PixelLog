@@ -48,6 +48,7 @@ import com.pixellog.audio.AudioInputManager
 import com.pixellog.camera.CameraController
 import com.pixellog.camera.LogParams
 import com.pixellog.nativebridge.PixelLogEngine
+import com.pixellog.recording.GyroflowTelemetryLogger
 import com.pixellog.recording.PixelLogEncoderPipeline
 import org.json.JSONArray
 import org.json.JSONObject
@@ -72,6 +73,17 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.CAMERA,
             Manifest.permission.RECORD_AUDIO
+        )
+
+        // Standard 1/3-stop ISO scale + sensor physical endpoints
+        val MASTER_ISO_PRESETS = intArrayOf(
+            24, 25, 30, 32, 40, 50, 64, 80, 100, 125, 160, 200, 250, 320,
+            400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400, 7500
+        )
+
+        // Standard cinematic & photographic shutter speeds (1/x sec)
+        val MASTER_SHUTTER_PRESETS = intArrayOf(
+            20000, 16000, 12000, 10000, 8000, 5000, 4000, 2000, 1000, 500, 250, 125, 120, 100, 96, 60, 50, 48, 30, 25, 24, 20, 15, 12, 10, 8, 6, 5, 4, 3, 2, 1
         )
     }
 
@@ -203,6 +215,35 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     runOnUiThread {
                         focusExposureOverlay.resetAll()
                         focusExposureOverlay.onResetAfAe?.invoke()
+                    }
+                }
+                "com.pixellog.SET_EV" -> {
+                    val evVal = intent.getFloatExtra("ev", 0.0f)
+                    runOnUiThread {
+                        val closestIdx = findClosestEvIndex(evVal)
+                        currentEvIndex = closestIdx
+                        val targetEv = evValues[currentEvIndex]
+                        cameraController.setEvCompensationValue(targetEv)
+                        if (activeParamTab == ParamTab.EV) {
+                            dialStrip.setCurrentIndex(closestIdx)
+                            updateAutoManualToggleForActiveTab()
+                            updateDialValueLabel()
+                        }
+                    }
+                }
+                "com.pixellog.SET_SHUTTER" -> {
+                    val speed = intent.getIntExtra("speed", 60)
+                    runOnUiThread {
+                        val closestIdx = findClosestShutterIndex(speed)
+                        currentShutterIndex = closestIdx
+                        val chosenSpeed = shutterSpeeds[currentShutterIndex]
+                        val shutterNs = (1_000_000_000L / chosenSpeed).coerceAtLeast(100_000L)
+                        cameraController.setShutter(shutterNs, isAuto = false)
+                        if (activeParamTab == ParamTab.SHUTTER) {
+                            dialStrip.setCurrentIndex(closestIdx)
+                            updateAutoManualToggleForActiveTab()
+                            updateDialValueLabel()
+                        }
                     }
                 }
             }
@@ -342,11 +383,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var textSettingsImportLut: TextView
     private lateinit var textSettingsStab: TextView
 
-    // Stabilization switches (above Lens Selector)
-    private lateinit var btnStabOff: TextView
-    private lateinit var btnStabOis: TextView
-    private lateinit var btnStabEis: TextView
-    private lateinit var btnStabFull: TextView
+    // Stabilization toggle (above Lens Selector, matching Penpot OIS element)
+    private lateinit var btnStabToggle: TextView
+    private var gyroTelemetryLogger: GyroflowTelemetryLogger? = null
 
     // Lens buttons
     private lateinit var btnLens12: TextView
@@ -358,6 +397,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var tabShutter: TextView
     private lateinit var tabEv: TextView
     private lateinit var tabIso: TextView
+
+    // EV Meter visualizer
+    private lateinit var evMeterView: EvMeterView
 
     // Performance bars view (CPU / RAM / GPU)
     private lateinit var performanceBarsView: PerformanceBarsView
@@ -372,29 +414,121 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private var currentEvIndex = 8       // EV 0
     private var currentWbIndex = 8       // 5600K
 
-    // Shutter speed presets (as 1/x, ordered from fastest to slowest)
-    // Includes all standard cinema 180° speeds: 120 (60p), 100 (50p), 96 (48p), 60 (30p), 50 (25p), 48 (24p)
-    private val shutterSpeeds = intArrayOf(
-        8000, 4000, 2000, 1000, 500, 250, 125, 120, 100, 96, 60, 50, 48, 30, 25, 24, 15, 8, 4, 2
+    private var shutterSpeeds = MASTER_SHUTTER_PRESETS
+    private var isoValues = MASTER_ISO_PRESETS
+    // EV presets (-4.0 to +4.0 EV in 0.5 EV steps matching hardware range)
+    private val evValues = floatArrayOf(
+        -4.0f, -3.5f, -3.0f, -2.5f, -2.0f, -1.5f, -1.0f, -0.5f,
+        0.0f,
+        0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f
     )
-    // ISO presets
-    private val isoValues = intArrayOf(50, 64, 100, 125, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600, 3200)
-    // EV presets (-5 to +5)
-    private val evValues = floatArrayOf(-5f, -4f, -3f, -2.5f, -2f, -1.5f, -1f, -0.5f, 0f, 0.5f, 1f, 1.5f, 2f, 2.5f, 3f)
     // WB Kelvin presets
     private val wbValues = intArrayOf(2000, 2500, 2800, 3200, 3500, 4000, 4500, 5000, 5600, 6000, 6500, 7000, 7500, 8000, 10000)
+
+    private fun findClosestShutterIndex(speed: Int): Int {
+        var bestIdx = 0
+        var bestDiff = Int.MAX_VALUE
+        for (i in shutterSpeeds.indices) {
+            val diff = kotlin.math.abs(shutterSpeeds[i] - speed)
+            if (diff < bestDiff) {
+                bestDiff = diff
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    private fun formatShutterSpeed(speed: Int): String {
+        return if (speed <= 1) "1s" else "1/$speed"
+    }
+
+    private fun findClosestIsoIndex(iso: Int): Int {
+        var bestIdx = 0
+        var bestDiff = Int.MAX_VALUE
+        for (i in isoValues.indices) {
+            val diff = kotlin.math.abs(isoValues[i] - iso)
+            if (diff < bestDiff) {
+                bestDiff = diff
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    private fun findClosestWbIndex(kelvin: Int): Int {
+        var bestIdx = 0
+        var bestDiff = Int.MAX_VALUE
+        for (i in wbValues.indices) {
+            val diff = kotlin.math.abs(wbValues[i] - kelvin)
+            if (diff < bestDiff) {
+                bestDiff = diff
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    private fun findClosestEvIndex(ev: Float): Int {
+        var bestIdx = 0
+        var bestDiff = Float.MAX_VALUE
+        for (i in evValues.indices) {
+            val diff = kotlin.math.abs(evValues[i] - ev)
+            if (diff < bestDiff) {
+                bestDiff = diff
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    private fun updateActiveIsoValues() {
+        val profile = cameraController.getActiveSensorProfile()
+        val minIso = profile.isoRange.lower
+        val maxIso = profile.isoRange.upper
+
+        val filtered = MASTER_ISO_PRESETS.filter { it in minIso..maxIso }.toMutableList()
+        if (filtered.isEmpty() || filtered.first() > minIso) {
+            filtered.add(0, minIso)
+        }
+        if (filtered.isNotEmpty() && filtered.last() < maxIso && (maxIso - filtered.last()) >= 50) {
+            filtered.add(maxIso)
+        }
+        val previousIso = isoValues.getOrNull(currentIsoIndex) ?: 100
+        isoValues = filtered.distinct().toIntArray()
+        currentIsoIndex = findClosestIsoIndex(previousIso)
+    }
+
+    private fun updateActiveShutterSpeeds() {
+        val profile = cameraController.getActiveSensorProfile()
+        val minExposureNs = profile.exposureTimeRangeNs.lower
+        val maxExposureNs = profile.exposureTimeRangeNs.upper
+
+        val maxAllowedSpeed = (1_000_000_000.0 / minExposureNs).toInt()
+        val minAllowedSpeed = (1_000_000_000.0 / maxExposureNs).roundToInt().coerceAtLeast(1)
+
+        val previousSpeed = shutterSpeeds.getOrNull(currentShutterIndex) ?: 60
+        val filtered = MASTER_SHUTTER_PRESETS.filter { speed ->
+            speed in minAllowedSpeed..maxAllowedSpeed
+        }.toMutableList()
+
+        if (filtered.isEmpty()) {
+            filtered.add(minAllowedSpeed)
+        }
+        shutterSpeeds = filtered.distinct().sortedDescending().toIntArray()
+        currentShutterIndex = findClosestShutterIndex(previousSpeed)
+    }
 
     private fun get180ShutterIndexForFramerate(config: CameraController.FramerateConfig): Int {
         val targetSpeed = config.shutter180Speed
         val idx = shutterSpeeds.indexOf(targetSpeed)
-        return if (idx >= 0) idx else {
-            shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - targetSpeed) } ?: 0
-        }
+        return if (idx >= 0) idx else findClosestShutterIndex(targetSpeed)
     }
 
     private fun applyFramerate(config: CameraController.FramerateConfig) {
         cameraController.setFramerate(config)
         prefs.framerate = config
+
+        updateActiveShutterSpeeds()
 
         // Default shutter speed to 180° for the new framerate
         val shutter180Idx = get180ShutterIndexForFramerate(config)
@@ -403,6 +537,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val shutterNs = (1_000_000_000L / speed).coerceAtLeast(100_000L)
         cameraController.targetShutterNs = shutterNs
         if (activeParamTab == ParamTab.SHUTTER) {
+            dialStrip.setRange(0, shutterSpeeds.size - 1, shutterSpeeds.size - 1)
             dialStrip.setValue(currentShutterIndex)
         }
         updateDialValueLabel()
@@ -419,6 +554,10 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         audioInputManager = AudioInputManager(this)
         prefs = CameraPreferences(this)
 
+        // Initialize active ISO and shutter speeds based on the default sensor and framerate
+        updateActiveIsoValues()
+        updateActiveShutterSpeeds()
+
         // Restore persisted state variables
         currentCodec = prefs.codec
         currentBitratePreset = prefs.bitratePreset
@@ -430,7 +569,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // Camera controls (Focus, Shutter, WB, EV, ISO) start fresh in Auto mode on app start
         val default180Idx = get180ShutterIndexForFramerate(prefs.framerate)
         currentShutterIndex = default180Idx
-        currentIsoIndex = 2      // ISO 100
+        currentIsoIndex = isoValues.indexOf(100).coerceAtLeast(0)
         currentEvIndex = 8       // EV 0
         currentWbIndex = 8       // 5600K
         isFocusAuto = true
@@ -446,7 +585,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         cameraController.targetShutterNs = (1_000_000_000L / initialSpeed).coerceAtLeast(100_000L)
         cameraController.targetIso = isoValues[currentIsoIndex]
         cameraController.targetKelvin = wbValues[currentWbIndex]
-        cameraController.targetEvCompensation = (evValues[currentEvIndex] * 2).roundToInt()
+        cameraController.targetEvCompensation = 0
         cameraController.targetFocusDiopter = 0.0f
         cameraController.setStabilization(prefs.stabilizationMode)
 
@@ -489,6 +628,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             addAction("com.pixellog.TRIGGER_TAP_FOCUS")
             addAction("com.pixellog.TRIGGER_HOLD_EXPOSURE")
             addAction("com.pixellog.RESET_FOCUS_EXPOSURE")
+            addAction("com.pixellog.SET_EV")
+            addAction("com.pixellog.SET_SHUTTER")
         }
         ContextCompat.registerReceiver(
             this,
@@ -506,6 +647,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textRemainingMinutes = findViewById(R.id.textRemainingMinutes)
         btnSettings = findViewById(R.id.btnSettings)
         btnRecord = findViewById(R.id.btnRecord)
+        evMeterView = findViewById(R.id.evMeterView)
         btnAutoManualToggle = findViewById(R.id.btnAutoManualToggle)
         btnFocusMode = findViewById(R.id.btnFocusMode)
         dialStrip = findViewById(R.id.dialStrip)
@@ -528,10 +670,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textSettingsImportLut = findViewById(R.id.textSettingsImportLut)
         textSettingsStab = findViewById(R.id.textSettingsStab)
 
-        btnStabOff = findViewById(R.id.btnStabOff)
-        btnStabOis = findViewById(R.id.btnStabOis)
-        btnStabEis = findViewById(R.id.btnStabEis)
-        btnStabFull = findViewById(R.id.btnStabFull)
+        btnStabToggle = findViewById(R.id.btnStabToggle)
 
         btnLens12 = findViewById(R.id.btnLens12)
         btnLens24 = findViewById(R.id.btnLens24)
@@ -747,14 +886,28 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             return
         }
         cameraController.setLensZoom(lens)
+        if (!cameraController.currentLensHasOis && cameraController.stabilizationMode == CameraController.StabilizationMode.OIS) {
+            cameraController.setStabilization(CameraController.StabilizationMode.OFF)
+            prefs.stabilizationMode = CameraController.StabilizationMode.OFF
+        }
         updateLensButtonsUi(lens)
         updateStabilizationSwitchesUi()
         updateSettingsDisplay()
         updateIsoTabIndicator()
-        if (activeParamTab == ParamTab.ISO) {
-            updateDialForTab()
-            updateDialValueLabel()
+
+        // Dynamically adapt ISO and shutter ranges to the new physical sensor
+        updateActiveIsoValues()
+        updateActiveShutterSpeeds()
+
+        // Re-scale manual focus for the new physical sensor
+        if (!isFocusAuto) {
+            val activeMax = cameraController.getActiveSensorProfile().minFocusDistanceDiopters
+            val diopter = (focusDialStrip.getCurrentIndex() / 100f) * activeMax
+            cameraController.setFocusDiopter(diopter)
         }
+
+        updateDialForTab()
+        updateDialValueLabel()
     }
 
     private fun updateLensButtonsUi(activeLens: CameraController.LensZoom) {
@@ -774,19 +927,34 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
-    // ── Stabilization Mode Switches (OFF / OIS) [EIS and FULL hidden for now] ──
+    // ── Stabilization Mode Toggle (OFF / OIS / GYRO) from Penpot design ──
 
     private fun setupStabilizationSwitches() {
-        btnStabOff.setOnClickListener { switchStabilization(CameraController.StabilizationMode.OFF) }
-        btnStabOis.setOnClickListener {
-            if (!cameraController.currentLensHasOis) {
-                Toast.makeText(this, "0.5x Ultra-Wide lacks hardware OIS", Toast.LENGTH_SHORT).show()
-            }
-            switchStabilization(CameraController.StabilizationMode.OIS)
-        }
-        btnStabEis.visibility = View.GONE
-        btnStabFull.visibility = View.GONE
+        btnStabToggle.setOnClickListener { cycleStabilizationMode() }
         updateStabilizationSwitchesUi()
+    }
+
+    private fun cycleStabilizationMode() {
+        if (isRecording) {
+            Toast.makeText(this, "Cannot switch stabilization while recording", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val hasOis = cameraController.currentLensHasOis
+        val nextMode = when (cameraController.stabilizationMode) {
+            CameraController.StabilizationMode.OFF -> {
+                if (hasOis) CameraController.StabilizationMode.OIS else CameraController.StabilizationMode.GYRO
+            }
+            CameraController.StabilizationMode.OIS -> {
+                CameraController.StabilizationMode.GYRO
+            }
+            CameraController.StabilizationMode.GYRO -> {
+                CameraController.StabilizationMode.OFF
+            }
+            else -> CameraController.StabilizationMode.OFF
+        }
+
+        switchStabilization(nextMode)
     }
 
     private fun switchStabilization(mode: CameraController.StabilizationMode) {
@@ -803,30 +971,30 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         prefs.stabilizationMode = safeMode
         updateStabilizationSwitchesUi()
         updateSettingsDisplay()
-        val resDesc = if (safeMode.isCrop) "3468×2600 (Raw Native Crop)" else "4080×3064 (Full Open-Gate)"
-        Toast.makeText(this, "Stabilization: ${safeMode.label} • $resDesc", Toast.LENGTH_SHORT).show()
+        val desc = when (safeMode) {
+            CameraController.StabilizationMode.OIS -> "OIS Active (Zero Crop)"
+            CameraController.StabilizationMode.GYRO -> "GYRO Log Active (Gyroflow Post-Stab, OIS OFF)"
+            CameraController.StabilizationMode.OFF -> "Stabilization OFF (Zero Crop)"
+            else -> safeMode.label
+        }
+        Toast.makeText(this, "Stabilization: ${safeMode.label} • $desc", Toast.LENGTH_SHORT).show()
     }
 
     private fun updateStabilizationSwitchesUi() {
         val currentMode = cameraController.stabilizationMode
-        val hasOis = cameraController.currentLensHasOis
-
-        val buttons = listOf(
-            Triple(CameraController.StabilizationMode.OFF, btnStabOff, true),
-            Triple(CameraController.StabilizationMode.OIS, btnStabOis, hasOis),
-            Triple(CameraController.StabilizationMode.EIS, btnStabEis, true),
-            Triple(CameraController.StabilizationMode.FULL, btnStabFull, true)
-        )
-
-        for ((mode, btn, available) in buttons) {
-            if (mode == currentMode) {
-                btn.setBackgroundResource(R.drawable.bg_stab_item_active)
-                btn.setTextColor(Color.WHITE)
-                btn.alpha = 1.0f
-            } else {
-                btn.background = null
-                btn.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
-                btn.alpha = if (available) 1.0f else 0.4f
+        btnStabToggle.text = currentMode.label
+        when (currentMode) {
+            CameraController.StabilizationMode.OIS -> {
+                btnStabToggle.setTextColor(Color.WHITE)
+            }
+            CameraController.StabilizationMode.GYRO -> {
+                btnStabToggle.setTextColor(ContextCompat.getColor(this, R.color.cyan_accent))
+            }
+            CameraController.StabilizationMode.OFF -> {
+                btnStabToggle.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+            }
+            else -> {
+                btnStabToggle.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
             }
         }
     }
@@ -890,13 +1058,24 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             engine.setEncoderSurface(encoderSurface)
             encoderPipeline!!.startRecording()
 
+            if (cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO) {
+                gyroTelemetryLogger = GyroflowTelemetryLogger(this)
+                gyroTelemetryLogger?.startLogging(
+                    videoFile = file,
+                    readoutSkewNs = cameraController.lastRollingShutterSkewNs,
+                    fps = cameraController.currentFramerate.fps,
+                    currentLensLabel = cameraController.currentLens.label
+                )
+            }
+
             isRecording = true
             performanceMonitor?.isRecording = true
             recordStartTimeMs = System.currentTimeMillis()
             btnRecord.setBackgroundResource(R.drawable.bg_record_button_stop)
             mainHandler.post(timecodeRunnable)
 
-            Toast.makeText(this, "Recording started (${encWidth}x${encHeight} ${codecTag} ${transferTag} ${bakeTag})", Toast.LENGTH_SHORT).show()
+            val gyroTag = if (cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO) " [GYRO LOG]" else ""
+            Toast.makeText(this, "Recording started (${encWidth}x${encHeight} ${codecTag} ${transferTag} ${bakeTag})$gyroTag", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Recording failed", e)
             Toast.makeText(this, "Recording failed: ${e.message}", Toast.LENGTH_LONG).show()
@@ -917,22 +1096,43 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         encoderPipeline?.stopRecording()
         encoderPipeline = null
 
+        val gcsvFile = if (cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO) {
+            gyroTelemetryLogger?.stopLogging()
+        } else {
+            gyroTelemetryLogger?.stopLogging()
+            null
+        }
+        gyroTelemetryLogger = null
+
         if (recordedFile != null && recordedFile.exists()) {
-            val sidecarFile = if (isSidecarEnabled) generateSidecarJson(recordedFile, durationMs) else null
-            val filesToScan = if (sidecarFile != null && sidecarFile.exists()) {
-                arrayOf(recordedFile.absolutePath, sidecarFile.absolutePath)
-            } else {
-                arrayOf(recordedFile.absolutePath)
+            val sidecarFile = if (isSidecarEnabled) generateSidecarJson(recordedFile, durationMs, gcsvFile) else null
+            val filesToScan = mutableListOf(recordedFile.absolutePath)
+            if (sidecarFile != null && sidecarFile.exists()) {
+                filesToScan.add(sidecarFile.absolutePath)
             }
-            val mimeTypes = if (filesToScan.size > 1) {
-                arrayOf("video/mp4", "application/json")
-            } else {
-                arrayOf("video/mp4")
+            if (gcsvFile != null && gcsvFile.exists()) {
+                filesToScan.add(gcsvFile.absolutePath)
             }
-            MediaScannerConnection.scanFile(this, filesToScan, mimeTypes) { path, uri ->
+            val mimeTypes = filesToScan.map {
+                when {
+                    it.endsWith(".mp4") -> "video/mp4"
+                    it.endsWith(".json") -> "application/json"
+                    it.endsWith(".gcsv") -> "text/csv"
+                    else -> "*/*"
+                }
+            }.toTypedArray()
+            MediaScannerConnection.scanFile(this, filesToScan.toTypedArray(), mimeTypes) { path, uri ->
                 Log.i(TAG, "MediaScanner registered: $path -> $uri")
             }
-            val toastMsg = if (sidecarFile != null) "Saved: ${recordedFile.name} (+json)" else "Saved: ${recordedFile.name}"
+            val toastMsg = buildString {
+                append("Saved: ${recordedFile.name}")
+                val tags = mutableListOf<String>()
+                if (gcsvFile != null) tags.add("+gcsv")
+                if (sidecarFile != null) tags.add("+json")
+                if (tags.isNotEmpty()) {
+                    append(" (${tags.joinToString(", ")})")
+                }
+            }
             Toast.makeText(this, toastMsg, Toast.LENGTH_LONG).show()
         }
     }
@@ -1044,14 +1244,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             updateSettingsDisplay()
         }
 
-        // Stabilization tap toggles (OFF <-> OIS) [EIS and FULL hidden for now]
+        // Stabilization tap toggles (OFF -> OIS -> GYRO -> OFF)
         findViewById<View>(R.id.settingsStabGroup).setOnClickListener {
-            val nextMode = if (cameraController.stabilizationMode == CameraController.StabilizationMode.OIS) {
-                CameraController.StabilizationMode.OFF
-            } else {
-                CameraController.StabilizationMode.OIS
-            }
-            switchStabilization(nextMode)
+            cycleStabilizationMode()
         }
 
         updateSettingsDisplay()
@@ -1109,8 +1304,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textSettingsStab.text = cameraController.stabilizationMode.label
         textSettingsStab.setTextColor(
             when (cameraController.stabilizationMode) {
-                CameraController.StabilizationMode.OFF -> Color.parseColor("#9E9E9E")
-                CameraController.StabilizationMode.OIS -> ContextCompat.getColor(this, R.color.cyan_accent)
+                CameraController.StabilizationMode.OFF -> ContextCompat.getColor(this, R.color.text_secondary)
+                CameraController.StabilizationMode.OIS -> Color.WHITE
+                CameraController.StabilizationMode.GYRO -> ContextCompat.getColor(this, R.color.cyan_accent)
                 CameraController.StabilizationMode.EIS -> Color.parseColor("#FFD54F")
                 CameraController.StabilizationMode.FULL -> Color.parseColor("#81C784")
             }
@@ -1243,20 +1439,33 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             if (dialStrip.isUserInteracting) {
                 when (activeParamTab) {
                     ParamTab.SHUTTER -> {
-                        currentShutterIndex = index.coerceIn(0, shutterSpeeds.size - 1)
-                        applyShutterFromDial()
+                        val newIdx = index.coerceIn(0, shutterSpeeds.size - 1)
+                        if (newIdx != currentShutterIndex) {
+                            currentShutterIndex = newIdx
+                            applyShutterFromDial()
+                        }
                     }
                     ParamTab.ISO -> {
-                        currentIsoIndex = index.coerceIn(0, isoValues.size - 1)
-                        applyIsoFromDial()
+                        val newIdx = index.coerceIn(0, isoValues.size - 1)
+                        if (newIdx != currentIsoIndex) {
+                            currentIsoIndex = newIdx
+                            applyIsoFromDial()
+                        }
                     }
                     ParamTab.EV -> {
-                        currentEvIndex = index.coerceIn(0, evValues.size - 1)
-                        cameraController.setEvCompensation((evValues[currentEvIndex] * 2).roundToInt())
+                        val newIdx = index.coerceIn(0, evValues.size - 1)
+                        if (newIdx != currentEvIndex) {
+                            currentEvIndex = newIdx
+                            val targetEv = evValues[currentEvIndex]
+                            cameraController.setEvCompensationValue(targetEv)
+                        }
                     }
                     ParamTab.WB -> {
-                        currentWbIndex = index.coerceIn(0, wbValues.size - 1)
-                        applyWbFromDial()
+                        val newIdx = index.coerceIn(0, wbValues.size - 1)
+                        if (newIdx != currentWbIndex) {
+                            currentWbIndex = newIdx
+                            applyWbFromDial()
+                        }
                     }
                 }
                 updateAutoManualToggleForActiveTab()
@@ -1294,7 +1503,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun updateDialValueLabel() {
         when (activeParamTab) {
             ParamTab.SHUTTER -> {
-                textDialValue.text = "1/${shutterSpeeds[currentShutterIndex.coerceIn(0, shutterSpeeds.size - 1)]}"
+                textDialValue.text = formatShutterSpeed(shutterSpeeds[currentShutterIndex.coerceIn(0, shutterSpeeds.size - 1)])
                 badgeDcg.visibility = View.GONE
             }
             ParamTab.ISO -> {
@@ -1305,7 +1514,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             ParamTab.EV -> {
                 val ev = evValues[currentEvIndex.coerceIn(0, evValues.size - 1)]
-                textDialValue.text = if (ev >= 0) "EV +${ev}" else "EV ${ev}"
+                val evFormatted = if (ev >= 0f) "+%.1f".format(Locale.US, ev) else "%.1f".format(Locale.US, ev)
+                textDialValue.text = "EV $evFormatted"
                 badgeDcg.visibility = View.GONE
             }
             ParamTab.WB -> {
@@ -1355,7 +1565,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun setupFocusDial() {
         focusDialStrip.dialOrientation = DialStripView.Orientation.VERTICAL
         focusDialStrip.setRange(0, 100, 50)
-        val initialFocusIndex = ((cameraController.targetFocusDiopter / 10f) * 100).roundToInt().coerceIn(0, 100)
+        val activeMax = cameraController.getActiveSensorProfile().minFocusDistanceDiopters.coerceAtLeast(0.1f)
+        val initialFocusIndex = ((cameraController.targetFocusDiopter / activeMax) * 100).roundToInt().coerceIn(0, 100)
         focusDialStrip.setValue(initialFocusIndex)
         btnFocusMode.text = if (isFocusAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
 
@@ -1376,7 +1587,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     cameraController.isFocusAuto = false
                     btnFocusMode.text = getString(R.string.label_manual)
                 }
-                val diopter = (index / 100f) * 10f  // 0..10 diopters
+                val maxD = cameraController.getActiveSensorProfile().minFocusDistanceDiopters.coerceAtLeast(0.1f)
+                val diopter = (index / 100f) * maxD
                 cameraController.setFocusDiopter(diopter)
             }
         }
@@ -1386,7 +1598,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             cameraController.isFocusAuto = isFocusAuto
             btnFocusMode.text = if (isFocusAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
             if (!isFocusAuto) {
-                val diopter = (focusDialStrip.getCurrentIndex() / 100f) * 10f
+                val maxD = cameraController.getActiveSensorProfile().minFocusDistanceDiopters.coerceAtLeast(0.1f)
+                val diopter = (focusDialStrip.getCurrentIndex() / 100f) * maxD
                 cameraController.setFocusDiopter(diopter)
             }
         }
@@ -1395,13 +1608,30 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     // ── Auto / Manual Toggle ──
 
     private fun updateAutoManualToggleForActiveTab() {
-        val isAuto = when (activeParamTab) {
-            ParamTab.SHUTTER -> cameraController.isShutterAuto
-            ParamTab.ISO -> cameraController.isIsoAuto
-            ParamTab.WB -> cameraController.isWbAuto
-            ParamTab.EV -> cameraController.targetEvCompensation == 0
+        val isPureManual = !cameraController.isShutterAuto && !cameraController.isIsoAuto
+        when (activeParamTab) {
+            ParamTab.SHUTTER -> {
+                btnAutoManualToggle.isEnabled = true
+                btnAutoManualToggle.alpha = 1.0f
+                btnAutoManualToggle.text = if (cameraController.isShutterAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
+            }
+            ParamTab.ISO -> {
+                btnAutoManualToggle.isEnabled = true
+                btnAutoManualToggle.alpha = 1.0f
+                btnAutoManualToggle.text = if (cameraController.isIsoAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
+            }
+            ParamTab.WB -> {
+                btnAutoManualToggle.isEnabled = true
+                btnAutoManualToggle.alpha = 1.0f
+                btnAutoManualToggle.text = if (cameraController.isWbAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
+            }
+            ParamTab.EV -> {
+                btnAutoManualToggle.isEnabled = true
+                btnAutoManualToggle.alpha = 1.0f
+                val isEvManual = isPureManual || evValues[currentEvIndex.coerceIn(0, evValues.size - 1)] != 0f || cameraController.targetEvCompensation != 0
+                btnAutoManualToggle.text = if (isEvManual) getString(R.string.label_manual) else getString(R.string.label_auto)
+            }
         }
-        btnAutoManualToggle.text = if (isAuto) getString(R.string.label_auto) else getString(R.string.label_manual)
     }
 
     private fun setupAutoManualToggle() {
@@ -1444,8 +1674,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     }
                 }
                 ParamTab.EV -> {
-                    // Reset EV compensation to 0 (Auto neutral)
-                    cameraController.setEvCompensation(0)
+                    // Clicking M resets EV compensation to 0.0 (Auto mode)
+                    cameraController.setEvCompensationValue(0f)
                     val zeroIdx = evValues.indexOfFirst { it == 0f }.coerceAtLeast(0)
                     currentEvIndex = zeroIdx
                     dialStrip.setCurrentIndex(zeroIdx)
@@ -1464,17 +1694,17 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 // 1. Live Shutter tracking
                 if (cameraController.isShutterAuto) {
                     val speed = if (shutterNs > 0) (1_000_000_000.0 / shutterNs).roundToInt() else 60
-                    val closestIdx = shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - speed) } ?: currentShutterIndex
+                    val closestIdx = findClosestShutterIndex(speed)
                     currentShutterIndex = closestIdx
                     if (activeParamTab == ParamTab.SHUTTER) {
-                        textDialValue.text = "1/$speed"
+                        textDialValue.text = formatShutterSpeed(speed)
                         dialStrip.setCurrentIndex(closestIdx)
                     }
                 }
 
                 // 2. Live ISO tracking
                 if (cameraController.isIsoAuto) {
-                    val closestIdx = isoValues.indices.minByOrNull { kotlin.math.abs(isoValues[it] - iso) } ?: currentIsoIndex
+                    val closestIdx = findClosestIsoIndex(iso)
                     currentIsoIndex = closestIdx
                     if (activeParamTab == ParamTab.ISO) {
                         textDialValue.text = "ISO $iso"
@@ -1486,7 +1716,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
                 // 3. Live WB tracking
                 if (cameraController.isWbAuto) {
-                    val closestIdx = wbValues.indices.minByOrNull { kotlin.math.abs(wbValues[it] - kelvin) } ?: currentWbIndex
+                    val closestIdx = findClosestWbIndex(kelvin)
                     currentWbIndex = closestIdx
                     if (activeParamTab == ParamTab.WB) {
                         textDialValue.text = "${kelvin}K"
@@ -1494,17 +1724,15 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     }
                 }
 
-                // 4. EV tracking when at neutral compensation
-                if (cameraController.targetEvCompensation == 0 && activeParamTab == ParamTab.EV) {
-                    val evFormatted = if (ev >= 0f) "+%.1f".format(Locale.US, ev) else "%.1f".format(Locale.US, ev)
-                    textDialValue.text = "EV $evFormatted"
-                }
-
-                // 5. Focus tracking
+                // 4. Focus tracking
                 if (isFocusAuto) {
-                    val focusPercent = ((focusDiopter / 10f) * 100f).roundToInt().coerceIn(0, 100)
+                    val maxD = cameraController.getActiveSensorProfile().minFocusDistanceDiopters.coerceAtLeast(0.1f)
+                    val focusPercent = ((focusDiopter / maxD) * 100f).roundToInt().coerceIn(0, 100)
                     focusDialStrip.setValue(focusPercent)
                 }
+
+                // 6. EV Meter Visualizer tracking (smoothly glides to current sitting exposure level)
+                evMeterView.setExposureLevel(ev)
             }
         }
     }
@@ -1552,11 +1780,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     val lockedIso = cameraController.targetIso
                     if (lockedShutter > 0) {
                         val speed = (1_000_000_000.0 / lockedShutter).roundToInt()
-                        val closestIdx = shutterSpeeds.indices.minByOrNull { kotlin.math.abs(shutterSpeeds[it] - speed) } ?: currentShutterIndex
-                        currentShutterIndex = closestIdx
+                        currentShutterIndex = findClosestShutterIndex(speed)
                     }
-                    val closestIsoIdx = isoValues.indices.minByOrNull { kotlin.math.abs(isoValues[it] - lockedIso) } ?: currentIsoIndex
-                    currentIsoIndex = closestIsoIdx
+                    currentIsoIndex = findClosestIsoIndex(lockedIso)
                     updateAutoManualToggleForActiveTab()
                     updateDialValueLabel()
                 }
@@ -1711,7 +1937,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     // ── Sidecar JSON (preserved from original) ──
 
-    private fun generateSidecarJson(videoFile: File, durationMs: Long): File? {
+    private fun generateSidecarJson(videoFile: File, durationMs: Long, gcsvFile: File? = null): File? {
         return try {
             val jsonFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.json")
             val root = JSONObject()
@@ -1787,6 +2013,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 put("kelvin", cameraController.targetKelvin)
                 put("tint", cameraController.targetTint)
                 put("stabilization_mode", cameraController.stabilizationMode.name)
+                put("gyroflow_active", cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO)
+                put("rolling_shutter_skew_ms", cameraController.lastRollingShutterSkewNs / 1_000_000.0)
+                if (gcsvFile != null) {
+                    put("gyroflow_gcsv_file", gcsvFile.name)
+                }
                 put("ois_active", cameraController.stabilizationMode.oisMode != CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF && cameraController.currentLensHasOis)
                 put("eis_active", cameraController.stabilizationMode.eisMode != CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
             }

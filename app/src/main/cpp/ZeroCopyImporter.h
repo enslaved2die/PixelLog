@@ -2,6 +2,8 @@
 
 #include "include/PixelLogCommon.h"
 
+#include <atomic>
+
 class ZeroCopyImporter {
 public:
     ZeroCopyImporter();
@@ -17,9 +19,13 @@ public:
     GLuint importHardwareBufferToTexture(AHardwareBuffer* hardwareBuffer, 
                                          int32_t width, 
                                          int32_t height, 
-                                         int32_t stride);
+                                         int32_t stride,
+                                         float blackLevel = 256.0f,
+                                         float whiteLevel = 4095.0f);
 
     void destroyTexture(GLuint textureId);
+
+    float getSceneExposureDelta() const { return mLastSceneDeltaEv.load(std::memory_order_relaxed); }
 
 private:
     EGLDisplay mEglDisplay;
@@ -34,4 +40,6 @@ private:
     GLuint mFallbackTexture;
     int32_t mFallbackWidth;
     int32_t mFallbackHeight;
+
+    std::atomic<float> mLastSceneDeltaEv{0.0f};
 };

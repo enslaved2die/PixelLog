@@ -105,6 +105,13 @@ class CameraController(
             false,
             "Optical Image Stabilization (4080x3064, zero crop)"
         ),
+        GYRO(
+            "GYRO",
+            CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
+            false,
+            "Gyroflow Post-Stabilization (4080x3064, IMU Log, OIS OFF)"
+        ),
         EIS(
             "EIS",
             CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
@@ -122,6 +129,9 @@ class CameraController(
     }
 
     var stabilizationMode: StabilizationMode = StabilizationMode.OIS
+        private set
+
+    var lastRollingShutterSkewNs: Long = 22_450_000L
         private set
 
     fun setStabilization(mode: StabilizationMode) {
@@ -146,12 +156,8 @@ class CameraController(
         val isBinned: Boolean
     ) {
         FPS_24("24", 24.0, 41_666_667L, 20_833_333L, 48, Range(24, 24), false),
-        FPS_25("25", 25.0, 40_000_000L, 20_000_000L, 50, Range(25, 25), false),
         FPS_29_97("29.97", 29.970029, 33_366_667L, 16_683_333L, 60, Range(30, 30), false),
-        FPS_30("30", 30.0, 33_333_333L, 16_666_666L, 60, Range(30, 30), false),
-        FPS_48("48", 48.0, 20_833_333L, 10_416_667L, 96, Range(48, 48), false),
-        FPS_50("50", 50.0, 20_000_000L, 10_000_000L, 100, Range(50, 50), false),
-        FPS_60("60", 60.0, 16_666_666L, 8_333_333L, 120, Range(60, 60), false);
+        FPS_30("30", 30.0, 33_333_333L, 16_666_666L, 60, Range(30, 30), false);
 
         val targetFps: Double get() = fps
         val binned: Boolean get() = isBinned
@@ -176,6 +182,18 @@ class CameraController(
         LOCKED
     }
 
+    data class SensorProfile(
+        val cameraId: String,
+        val lensZoom: LensZoom,
+        val minFocusDistanceDiopters: Float,
+        val hyperfocalDistanceDiopters: Float,
+        val isoRange: Range<Int>,
+        val exposureTimeRangeNs: Range<Long>,
+        val maxAnalogSensitivity: Int,
+        val hasDcg: Boolean,
+        val dcgThresholdIso: Int = 400
+    )
+
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
@@ -188,6 +206,27 @@ class CameraController(
     var currentPhysicalCameraId: String = "2"
         private set
     private val calibrationCache = mutableMapOf<String, CameraCalibration>()
+    private val sensorProfiles = mutableMapOf<String, SensorProfile>()
+
+    fun getActiveSensorProfile(): SensorProfile {
+        sensorProfiles[currentPhysicalCameraId]?.let { return it }
+        val chars = cameraCharacteristics
+        val minFocus = chars?.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 9.52f
+        val hyperfocal = chars?.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0.17f
+        val isoRange = chars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: Range(50, 3200)
+        val expRange = chars?.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: Range(100_000L, 1_000_000_000L)
+        val maxAnalog = chars?.get(CameraCharacteristics.SENSOR_MAX_ANALOG_SENSITIVITY) ?: 376
+        return SensorProfile(
+            cameraId = currentPhysicalCameraId,
+            lensZoom = currentLens,
+            minFocusDistanceDiopters = minFocus,
+            hyperfocalDistanceDiopters = hyperfocal,
+            isoRange = isoRange,
+            exposureTimeRangeNs = expRange,
+            maxAnalogSensitivity = maxAnalog,
+            hasDcg = currentLensHasDcg
+        )
+    }
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
@@ -263,9 +302,13 @@ class CameraController(
 
     var targetEvCompensation: Int = 0
         set(value) {
-            field = value
+            val range = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            field = if (range != null) value.coerceIn(range.lower, range.upper) else value
             applyStateAndRepeat()
         }
+
+    private var autoComputedIso: Int = 100
+    private var autoComputedShutterNs: Long = SHUTTER_180_NS
 
     // Metering Regions & AE/AF Lock States
     var afMeteringRegion: MeteringRectangle? = null
@@ -286,6 +329,8 @@ class CameraController(
     private var preLockIsoAuto: Boolean = true
     private var lastProcessedFrameNumber: Long = 0L
     private var pendingAeRegionFrame: Long = -1L
+    private var lastAutoConvergenceFrame: Long = 0L
+    private var isClosedLoopSettled: Boolean = true
     private val pipelineMaxDepth: Int
         get() = cameraCharacteristics?.get(CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH)?.toInt() ?: 4
 
@@ -295,9 +340,10 @@ class CameraController(
      * CONTROL_AE_MODE_OFF with instantaneous sensor sensitivity and exposure time.
      */
     fun lockExposureInstantaneous() {
-        val currentIso = (if (lastIso > 0) lastIso else lastAutoIso).coerceIn(50, 6400)
+        val profile = getActiveSensorProfile()
+        val currentIso = (if (lastIso > 0) lastIso else lastAutoIso).coerceIn(profile.isoRange.lower, profile.isoRange.upper)
         val currentShutterNs = (if (lastExposureNs > 0) lastExposureNs else lastAutoExposureNs)
-            .coerceIn(100_000L, currentFramerate.frameDurationNs)
+            .coerceIn(profile.exposureTimeRangeNs.lower, profile.exposureTimeRangeNs.upper)
 
         targetIso = currentIso
         targetShutterNs = currentShutterNs
@@ -316,7 +362,8 @@ class CameraController(
     }
 
     fun setFocusDiopter(diopter: Float) {
-        targetFocusDiopter = diopter.coerceIn(0.0f, 10.0f)
+        val maxDiopter = getActiveSensorProfile().minFocusDistanceDiopters
+        targetFocusDiopter = if (maxDiopter > 0f) diopter.coerceIn(0.0f, maxDiopter) else diopter.coerceAtLeast(0.0f)
         if (!isFocusAuto) {
             afMeteringRegion = null
             currentAfState = AfState.IDLE
@@ -349,6 +396,8 @@ class CameraController(
     var lastAutoIso: Int = 100
         private set
     var lastAutoExposureNs: Long = SHUTTER_180_NS
+        private set
+    var lastAutoEvCompensation: Float = 0.0f
         private set
     var lastFocusDiopter: Float = 0.0f
         private set
@@ -446,6 +495,27 @@ class CameraController(
 
                     // Cache calibration for this camera
                     calibrationCache[id] = extractCalibration(id, chars)
+
+                    // Cache hardware sensor profile (focus, ISO, exposure ranges)
+                    val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0.0f
+                    val hyperfocal = chars.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0.0f
+                    val isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: Range(50, 3200)
+                    val expRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: Range(100_000L, 1_000_000_000L)
+                    val maxAnalog = chars.get(CameraCharacteristics.SENSOR_MAX_ANALOG_SENSITIVITY) ?: 376
+                    val hasDcg = (id == "0" || id == "2") // Wide sensor supports dual conversion gain
+
+                    val lensZoom = if (minFocal < 3.5f) LensZoom.UW_05X else if (minFocal > 12.0f) LensZoom.TELE_5X else LensZoom.WIDE_1X
+                    sensorProfiles[id] = SensorProfile(
+                        cameraId = id,
+                        lensZoom = lensZoom,
+                        minFocusDistanceDiopters = minFocus,
+                        hyperfocalDistanceDiopters = hyperfocal,
+                        isoRange = isoRange,
+                        exposureTimeRangeNs = expRange,
+                        maxAnalogSensitivity = maxAnalog,
+                        hasDcg = hasDcg
+                    )
+                    Log.i(TAG, "Cached SensorProfile for Cam $id ($lensZoom): MinFocus=${minFocus}D, ISO=$isoRange, ExpNs=$expRange")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error inspecting camera $id: ${e.message}")
@@ -752,25 +822,66 @@ class CameraController(
     }
 
     fun setShutter(shutterNs: Long, isAuto: Boolean = false) {
-        targetShutterNs = shutterNs
+        val profile = getActiveSensorProfile()
+        val newTarget = shutterNs.coerceIn(profile.exposureTimeRangeNs.lower, profile.exposureTimeRangeNs.upper)
+        if (newTarget == targetShutterNs && isAuto == isShutterAuto) return
+        targetShutterNs = newTarget
         isShutterAuto = isAuto
+        if (!isAuto && isIsoAuto) {
+            autoComputedIso = (lastIso.takeIf { it > 0 } ?: targetIso).coerceIn(profile.isoRange.lower, profile.isoRange.upper)
+            lastAutoConvergenceFrame = lastProcessedFrameNumber
+            isClosedLoopSettled = false
+        }
         applyStateAndRepeat()
     }
 
     fun setIso(iso: Int, isAuto: Boolean = false) {
-        targetIso = iso
+        val profile = getActiveSensorProfile()
+        val newTarget = iso.coerceIn(profile.isoRange.lower, profile.isoRange.upper)
+        if (newTarget == targetIso && isAuto == isIsoAuto) return
+        targetIso = newTarget
         isIsoAuto = isAuto
+        if (!isAuto && isShutterAuto) {
+            val maxAllowedShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L)
+            autoComputedShutterNs = (lastExposureNs.takeIf { it > 0 } ?: currentFramerate.shutter180Ns)
+                .coerceIn(profile.exposureTimeRangeNs.lower, maxAllowedShutter)
+            lastAutoConvergenceFrame = lastProcessedFrameNumber
+            isClosedLoopSettled = false
+        }
         applyStateAndRepeat()
     }
 
     fun setWhiteBalance(kelvin: Int, isAuto: Boolean = false) {
+        if (kelvin == targetKelvin && isAuto == isWbAuto) return
         targetKelvin = kelvin
         isWbAuto = isAuto
         applyStateAndRepeat()
     }
 
+    fun getEvStep(): Float {
+        val rational = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+        return rational?.toFloat() ?: 0.5f
+    }
+
     fun setEvCompensation(compensationSteps: Int) {
-        targetEvCompensation = compensationSteps
+        val range = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val steps = if (range != null) compensationSteps.coerceIn(range.lower, range.upper) else compensationSteps
+        if (steps == targetEvCompensation) return
+        targetEvCompensation = steps
+        lastAutoConvergenceFrame = lastProcessedFrameNumber
+        isClosedLoopSettled = false
+        applyStateAndRepeat()
+    }
+
+    fun setEvCompensationValue(ev: Float) {
+        val step = getEvStep()
+        val range = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        val steps = if (step > 0f) (ev / step).roundToInt() else (ev * 2).roundToInt()
+        val target = if (range != null) steps.coerceIn(range.lower, range.upper) else steps
+        if (target == targetEvCompensation) return
+        targetEvCompensation = target
+        lastAutoConvergenceFrame = lastProcessedFrameNumber
+        isClosedLoopSettled = false
         applyStateAndRepeat()
     }
 
@@ -890,10 +1001,28 @@ class CameraController(
     }
 
     private fun populateCommonSettings(builder: CaptureRequest.Builder) {
-        // Clamp frame rate to configured cadence (fixed range preferred to eliminate exposure pulsing)
-        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, getBestFpsRange(currentFramerate))
-        builder.set(CaptureRequest.SENSOR_FRAME_DURATION, currentFramerate.frameDurationNs)
+        // Frame rate cadence and frame duration (allows long exposures like 1/2s, 1s without HAL conflict):
+        val effectiveShutterNs = if (!isShutterAuto) {
+            targetShutterNs
+        } else if (!isIsoAuto) {
+            autoComputedShutterNs
+        } else {
+            currentFramerate.shutter180Ns
+        }
 
+        val requiredFrameDuration = if (effectiveShutterNs > currentFramerate.frameDurationNs) {
+            effectiveShutterNs
+        } else {
+            currentFramerate.frameDurationNs
+        }
+        val targetFpsRange = if (effectiveShutterNs > currentFramerate.frameDurationNs) {
+            val minFps = (1_000_000_000.0 / effectiveShutterNs).toInt().coerceAtLeast(1)
+            Range(minFps, currentFramerate.fps.roundToInt())
+        } else {
+            getBestFpsRange(currentFramerate)
+        }
+        builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, targetFpsRange)
+        builder.set(CaptureRequest.SENSOR_FRAME_DURATION, requiredFrameDuration)
         // Prevent digital gain highlight clipping
         builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 100)
 
@@ -982,27 +1111,22 @@ class CameraController(
             builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
 
         } else {
-            // 4. Pure Manual or Non-Compounding Anchor Fallback
+            // 4. Closed-Loop Semi-Auto Fallback or Pure Manual Mode
             builder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             builder.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
 
-            val evStep = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
-            val evScale = Math.pow(2.0, targetEvCompensation * (evStep?.toDouble() ?: 0.5))
-
             if (!isShutterAuto && isIsoAuto) {
-                // Shutter Priority Fallback: Use live auto anchor
+                // Shutter Priority: Manual Shutter + Closed-Loop Auto ISO
                 builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
-                val baseIso = if (lastAutoIso > 0) lastAutoIso else 100
-                val baseShutter = if (lastAutoExposureNs > 0) lastAutoExposureNs else SHUTTER_180_NS
-                val computedIso = (baseIso * (baseShutter.toDouble() / targetShutterNs) * evScale).roundToInt().coerceIn(50, 6400)
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, computedIso)
-            } else {
-                // ISO Priority Fallback: Use live auto anchor
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, autoComputedIso)
+            } else if (isShutterAuto && !isIsoAuto) {
+                // ISO Priority: Manual ISO + Closed-Loop Auto Shutter
                 builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
-                val baseIso = if (lastAutoIso > 0) lastAutoIso else 100
-                val baseShutter = if (lastAutoExposureNs > 0) lastAutoExposureNs else SHUTTER_180_NS
-                val computedShutter = (baseShutter * (baseIso.toDouble() / targetIso) * evScale).toLong().coerceIn(100_000L, 1_000_000_000L)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, computedShutter)
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, autoComputedShutterNs)
+            } else {
+                // Pure Manual Mode: User values strictly locked
+                builder.set(CaptureRequest.SENSOR_SENSITIVITY, targetIso)
+                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, targetShutterNs)
             }
             builder.set(CaptureRequest.CONTROL_POST_RAW_SENSITIVITY_BOOST, 100)
             builder.set(CaptureRequest.CONTROL_AE_LOCK, false)
@@ -1184,6 +1308,12 @@ class CameraController(
             val frameNumber = result.frameNumber
             lastProcessedFrameNumber = frameNumber
 
+            val skewNs = physResult.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)
+                ?: result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)
+            if (skewNs != null && skewNs > 0L) {
+                lastRollingShutterSkewNs = skewNs
+            }
+
             val iso = physResult.get(CaptureResult.SENSOR_SENSITIVITY) ?: targetIso
             val exposureNs = physResult.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: targetShutterNs
             val focusDiopter = physResult.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: targetFocusDiopter
@@ -1280,19 +1410,87 @@ class CameraController(
                 )
             }
 
-            if (isIsoAuto) {
+            if (isIsoAuto && isShutterAuto) {
                 lastAutoIso = iso
-            }
-            if (isShutterAuto) {
                 lastAutoExposureNs = exposureNs
+                lastAutoEvCompensation = evFloat
+            } else if (isIsoAuto) {
+                // In semi-auto Shutter Priority, update auto baseline without compounding
+                if (supportsAePriority(AE_PRIORITY_SHUTTER)) {
+                    lastAutoIso = iso
+                }
+            } else if (isShutterAuto) {
+                // In semi-auto ISO Priority, update auto baseline without compounding
+                if (supportsAePriority(AE_PRIORITY_ISO)) {
+                    lastAutoExposureNs = exposureNs
+                }
             }
             lastExposureNs = exposureNs
             lastIso = iso
             lastFocusDiopter = focusDiopter
             lastKelvin = effectiveKelvin
-            lastEv = evFloat
 
-            onLiveTelemetry?.invoke(iso, exposureNs, focusDiopter, effectiveKelvin, evFloat)
+            // The EV Display represents the scene's actual exposure level relative to 18% middle gray.
+            // Measured photometrically from incoming RAW16 Bayer frame green sensels via zero-copy engine:
+            // Delta EV = log2(meanY_sensor / 2^-5.5), where 2^-5.5 (~0.0221) is nominal 18% middle gray in Pixel-Log.
+            // - In Pure Manual mode: functions as a true Through-The-Lens (TTL) Light Meter / Metered Manual indicator,
+            //   showing whether manual shutter/ISO are under- or overexposed relative to middle gray. EV compensation is ignored.
+            // - In Semi-Auto & Full Auto modes: reflects convergence to target EV compensation, and deflects if sensor limits
+            //   (min/max ISO or shutter cadence bounds) are reached.
+            val measuredDeltaEv = engine.getSceneExposureDelta()
+            val sceneEv = measuredDeltaEv.coerceIn(-5.0f, 5.0f)
+            lastEv = sceneEv
+
+            onLiveTelemetry?.invoke(iso, exposureNs, focusDiopter, effectiveKelvin, sceneEv)
+
+            // Closed-loop semi-auto convergence for Shutter Priority / ISO Priority (rate-limited to 8-frame pipeline & filter depth)
+            val targetEv = targetEvCompensation * (evStep?.toFloat() ?: 0.5f)
+            val evError = targetEv - sceneEv
+
+            // Dual-threshold hysteresis deadband:
+            // When settled, ignore noise/jitter under 0.28 EV.
+            // When actively converging, continue until error is within 0.12 EV.
+            val errorMagnitude = Math.abs(evError)
+            if (isClosedLoopSettled) {
+                if (errorMagnitude > 0.28f) {
+                    isClosedLoopSettled = false
+                }
+            } else {
+                if (errorMagnitude <= 0.12f) {
+                    isClosedLoopSettled = true
+                }
+            }
+
+            if (!isClosedLoopSettled && frameNumber - lastAutoConvergenceFrame >= 8) {
+                if (!isShutterAuto && isIsoAuto && !supportsAePriority(AE_PRIORITY_SHUTTER)) {
+                    val correctionFactor = Math.pow(2.0, (evError * 0.18f).toDouble())
+                    val profile = getActiveSensorProfile()
+                    val minIso = profile.isoRange.lower
+                    val maxIso = profile.isoRange.upper
+                    val nextIso = (autoComputedIso * correctionFactor).roundToInt().coerceIn(minIso, maxIso)
+                    if (Math.abs(nextIso - autoComputedIso) >= 5) {
+                        autoComputedIso = nextIso
+                        lastAutoConvergenceFrame = frameNumber
+                        applyStateAndRepeat()
+                    } else {
+                        isClosedLoopSettled = true
+                    }
+                } else if (isShutterAuto && !isIsoAuto && !supportsAePriority(AE_PRIORITY_ISO)) {
+                    val correctionFactor = Math.pow(2.0, (evError * 0.18f).toDouble())
+                    val profile = getActiveSensorProfile()
+                    val minShutter = profile.exposureTimeRangeNs.lower
+                    val maxShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L)
+                    val nextShutter = (autoComputedShutterNs * correctionFactor).toLong().coerceIn(minShutter, maxShutter)
+                    val minChange = (autoComputedShutterNs * 0.05).toLong().coerceIn(20_000L, 500_000L)
+                    if (Math.abs(nextShutter - autoComputedShutterNs) >= minChange) {
+                        autoComputedShutterNs = nextShutter
+                        lastAutoConvergenceFrame = frameNumber
+                        applyStateAndRepeat()
+                    } else {
+                        isClosedLoopSettled = true
+                    }
+                }
+            }
 
             // 2. Dynamic Black Level with range sanitization & temporal EMA smoothing
             val whiteLevel = currentCalibration?.whiteLevel ?: 4095.0f

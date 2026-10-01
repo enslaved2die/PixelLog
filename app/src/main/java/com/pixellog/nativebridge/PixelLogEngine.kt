@@ -152,7 +152,13 @@ class PixelLogEngine {
         }
     }
 
+    fun getSceneExposureDelta(): Float {
+        if (nativeHandle == 0L) return 0.0f
+        return nativeGetSceneExposureDelta(nativeHandle)
+    }
+
     // Native JNI functions
+    private external fun nativeGetSceneExposureDelta(handle: Long): Float
     private external fun nativeCreate(width: Int, height: Int, bayerPattern: Int): Long
     private external fun nativeDestroy(handle: Long)
     private external fun nativeGetCameraSurface(handle: Long): Surface?

@@ -56,6 +56,7 @@ class DialStripView @JvmOverloads constructor(
     private var scrollOffset: Float = 0f
     private var isDragging: Boolean = false
     private var lastDcgHcgState: Boolean? = null
+    private var lastNotifiedIndex: Int = -1
 
     val isUserInteracting: Boolean
         get() = isDragging || !scroller.isFinished
@@ -180,14 +181,17 @@ class DialStripView @JvmOverloads constructor(
         this.maxValue = max
         this.steps = maxOf(1, stepsCount)
         scrollOffset = 0f
+        lastNotifiedIndex = -1
         invalidate()
     }
 
     fun setValue(value: Int) {
         if (isDragging) return
+        scroller.forceFinished(true)
         val clamped = value.coerceIn(minValue, maxValue)
         val fraction = if (maxValue > minValue) (clamped - minValue).toFloat() / (maxValue - minValue) else 0f
         scrollOffset = fraction * steps * tickSpacing
+        lastNotifiedIndex = getCurrentIndex()
         invalidate()
     }
 
@@ -202,8 +206,10 @@ class DialStripView @JvmOverloads constructor(
 
     fun setCurrentIndex(index: Int) {
         if (isDragging) return
+        scroller.forceFinished(true)
         val clamped = index.coerceIn(0, steps)
         scrollOffset = clamped * tickSpacing
+        lastNotifiedIndex = clamped
         invalidate()
     }
 
@@ -220,14 +226,17 @@ class DialStripView @JvmOverloads constructor(
     private fun notifyValueChange() {
         val index = getCurrentIndex()
         val fraction = getFraction()
-        if (dcgThresholdIndex in 0..steps) {
-            val isHcg = index >= dcgThresholdIndex
-            if (lastDcgHcgState != null && lastDcgHcgState != isHcg && isDragging) {
-                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        if (index != lastNotifiedIndex) {
+            lastNotifiedIndex = index
+            if (dcgThresholdIndex in 0..steps) {
+                val isHcg = index >= dcgThresholdIndex
+                if (lastDcgHcgState != null && lastDcgHcgState != isHcg && isDragging) {
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                }
+                lastDcgHcgState = isHcg
             }
-            lastDcgHcgState = isHcg
+            onValueChanged?.invoke(index, fraction)
         }
-        onValueChanged?.invoke(index, fraction)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {

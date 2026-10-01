@@ -98,18 +98,14 @@ class CameraPreferencesTest {
     @Test
     fun testFramerate180ShutterRule() {
         assertEquals(48, CameraController.FramerateConfig.FPS_24.shutter180Speed)
-        assertEquals(50, CameraController.FramerateConfig.FPS_25.shutter180Speed)
         assertEquals(60, CameraController.FramerateConfig.FPS_30.shutter180Speed)
         assertEquals(60, CameraController.FramerateConfig.FPS_29_97.shutter180Speed)
-        assertEquals(96, CameraController.FramerateConfig.FPS_48.shutter180Speed)
-        assertEquals(100, CameraController.FramerateConfig.FPS_50.shutter180Speed)
-        assertEquals(120, CameraController.FramerateConfig.FPS_60.shutter180Speed)
 
-        // Verify FPS_48 timing
-        assertEquals(48.0, CameraController.FramerateConfig.FPS_48.fps, 1e-4)
-        assertEquals(20_833_333L, CameraController.FramerateConfig.FPS_48.frameDurationNs)
-        assertEquals(10_416_667L, CameraController.FramerateConfig.FPS_48.shutter180Ns)
-        assertEquals("48", CameraController.FramerateConfig.FPS_48.label)
+        // Verify FPS_29_97 timing
+        assertEquals(29.970029, CameraController.FramerateConfig.FPS_29_97.fps, 1e-4)
+        assertEquals(33_366_667L, CameraController.FramerateConfig.FPS_29_97.frameDurationNs)
+        assertEquals(16_683_333L, CameraController.FramerateConfig.FPS_29_97.shutter180Ns)
+        assertEquals("29.97", CameraController.FramerateConfig.FPS_29_97.label)
     }
 
     @Test

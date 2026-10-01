@@ -28,6 +28,7 @@ public:
     void setBakeLutToEncoder(bool enabled);
     void setLogCurveType(int32_t type);
     void setExposureGain(float gain);
+    float getSceneExposureDelta() const { return mGpuPipeline.getSceneExposureDelta(); }
 
     void updateFrameMetadata(const SensorFrameMetadata& metadata);
 

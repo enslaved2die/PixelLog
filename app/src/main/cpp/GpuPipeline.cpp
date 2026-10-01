@@ -661,7 +661,7 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     }
 
     // 2. Import AHardwareBuffer to raw integer texture (executing on processing thread with valid context!)
-    GLuint rawTexture = mImporter.importHardwareBufferToTexture(rawBuffer, mWidth, mHeight, stride);
+    GLuint rawTexture = mImporter.importHardwareBufferToTexture(rawBuffer, mWidth, mHeight, stride, metadata.dynamicBlackLevel.gr, metadata.whiteLevel);
     if (rawTexture == 0) {
         LOGE("GpuPipeline: Failed to import raw hardware buffer to texture");
         return;

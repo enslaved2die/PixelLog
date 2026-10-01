@@ -36,6 +36,7 @@ public:
     bool isBakeLutToEncoder() const { return mBakeLutToEncoder.load(); }
     int32_t getLogCurveType() const;
     float getExposureGain() const;
+    float getSceneExposureDelta() const { return mImporter.getSceneExposureDelta(); }
 
     // Frame processing pipeline
     void processFrame(AHardwareBuffer* rawBuffer,

@@ -77,7 +77,9 @@ void ZeroCopyImporter::release() {
 GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardwareBuffer,
                                                        int32_t width,
                                                        int32_t height,
-                                                       int32_t stride) {
+                                                       int32_t stride,
+                                                       float blackLevel,
+                                                       float whiteLevel) {
     if (!hardwareBuffer) {
         LOGE("ZeroCopyImporter::importHardwareBufferToTexture: invalid arguments");
         return 0;
@@ -105,11 +107,62 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
         uint32_t rowStride = desc.stride > 0 ? desc.stride : bufW;
 
         const uint16_t* p16 = static_cast<const uint16_t*>(virtualAddress);
+
+        // Center-weighted photometric exposure delta evaluation (32x24 grid on Green sensels)
+        uint32_t xStart = (uploadW / 4) & ~1u;
+        uint32_t xEnd   = (uploadW * 3 / 4) & ~1u;
+        uint32_t yStart = (uploadH / 4) & ~1u;
+        uint32_t yEnd   = (uploadH * 3 / 4) & ~1u;
+
+        uint32_t stepX = ((xEnd - xStart) / 32) & ~1u;
+        uint32_t stepY = ((yEnd - yStart) / 24) & ~1u;
+        if (stepX < 2) stepX = 2;
+        if (stepY < 2) stepY = 2;
+
+        float bl = blackLevel > 0.0f ? blackLevel : 256.0f;
+        float wl = whiteLevel > (bl + 1.0f) ? whiteLevel : 4095.0f;
+        float rangeInv = 1.0f / (wl - bl);
+
+        double weightedSum = 0.0;
+        double totalWeight = 0.0;
+        float halfW = uploadW * 0.5f;
+        float halfH = uploadH * 0.5f;
+        float twoSigmaSq = 2.0f * (0.25f * uploadW) * (0.25f * uploadW);
+
+        for (uint32_t y = yStart; y < yEnd; y += stepY) {
+            const uint16_t* row = p16 + (y * rowStride);
+            float dy = (float)y - halfH;
+            float dySq = dy * dy;
+            for (uint32_t x = xStart; x < xEnd; x += stepX) {
+                // In RGGB Bayer, row y (even) has Gr at odd x (x | 1u)
+                uint16_t rawGr = row[x | 1u];
+                float linear = std::max(0.0f, (float)rawGr - bl) * rangeInv;
+
+                float dx = (float)x - halfW;
+                float distSq = dx * dx + dySq;
+                float weight = std::exp(-distSq / twoSigmaSq);
+
+                weightedSum += linear * weight;
+                totalWeight += weight;
+            }
+        }
+
+        // Target Middle Gray in sensor linear space: 2^-5.5 ~= 0.022097087
+        constexpr float TARGET_MIDDLE_GRAY = 0.022097087f;
+        float meanY = (totalWeight > 0.0) ? (float)(weightedSum / totalWeight) : TARGET_MIDDLE_GRAY;
+        float rawDeltaEv = std::log2(std::max(meanY, 1e-6f) / TARGET_MIDDLE_GRAY);
+        float clampedDeltaEv = std::clamp(rawDeltaEv, -5.0f, 5.0f);
+
+        // Smooth with temporal EMA filter (alpha = 0.35) to reject sensel shot noise
+        float prevEv = mLastSceneDeltaEv.load(std::memory_order_relaxed);
+        float smoothedEv = prevEv * 0.65f + clampedDeltaEv * 0.35f;
+        mLastSceneDeltaEv.store(smoothedEv, std::memory_order_relaxed);
+
         static uint64_t sampleCount = 0;
         if (sampleCount++ % 60 == 0) {
             uint32_t centerIdx = rowStride * (uploadH / 2) + (uploadW / 2);
-            LOGI("ZeroCopyImporter: Raw Bayer values [0]=%u, [center]=%u, stride=%u, format=0x%x, buf=%ux%u, target=%dx%d",
-                 p16[0], p16[centerIdx], desc.stride, desc.format, bufW, bufH, width, height);
+            LOGI("ZeroCopyImporter: Raw Bayer values [0]=%u, [center]=%u, meanY=%.5f, deltaEv=%.2f, stride=%u, format=0x%x, buf=%ux%u, target=%dx%d",
+                 p16[0], p16[centerIdx], meanY, smoothedEv, desc.stride, desc.format, bufW, bufH, width, height);
         }
 
         if (mFallbackTexture == 0 || mFallbackWidth != width || mFallbackHeight != height) {
