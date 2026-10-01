@@ -103,6 +103,10 @@ PixelLog/
 │   ├── PixelLog_Transform.dctl               # Production DaVinci Resolve DCTL transform
 │   ├── PixelLog_Inverse.dctl                 # Inverse DCTL (Log → Linear round-trip)
 │   ├── generate_pixel_log_luts.py            # Python generator for all .cube LUTs
+│   ├── LogToLinear_1D.cube                   # 4096-entry 1D Log-to-Linear LUT
+│   ├── Gamut_Rec2020_to_Rec709.txt           # BT.2020 → BT.709 3×3 matrix coefficients
+│   ├── Gamut_Rec2020_to_ACEScg.txt           # BT.2020 → ACEScg 3×3 matrix coefficients
+│   ├── Gamut_Rec2020_to_DWG.txt              # BT.2020 → DaVinci Wide Gamut matrix
 │   ├── PixelLog_to_Rec709_Display_33/65.cube # Display Rec.709 (33 & 65 pt)
 │   ├── PixelLog_to_Rec2020_Linear_33/65.cube # Scene-linear BT.2020 (33 & 65 pt)
 │   ├── PixelLog_to_ACEScg_33/65.cube         # ACEScg (33 & 65 pt)
