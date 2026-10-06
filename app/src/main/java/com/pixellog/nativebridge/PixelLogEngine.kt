@@ -21,6 +21,10 @@ class PixelLogEngine {
     private var pendingLutEnabled: Boolean = true
     private var pendingBakeLutToEncoder: Boolean = false
     private var pendingExposureGain: Float = 1.0f
+    private var pendingEdrEnabled: Boolean = false
+    private var pendingShadowRecoveryMode: Int = 0
+    private var pendingShadowRecoveryEnabled: Boolean = false
+    private var pendingHighlightRecoveryEnabled: Boolean = false
 
     private fun releaseNativeHandle() {
         if (nativeHandle != 0L) {
@@ -48,6 +52,10 @@ class PixelLogEngine {
             nativeSetLutEnabled(nativeHandle, pendingLutEnabled)
             nativeSetBakeLutToEncoder(nativeHandle, pendingBakeLutToEncoder)
             nativeSetExposureGain(nativeHandle, pendingExposureGain)
+            nativeSetEdrEnabled(nativeHandle, pendingEdrEnabled)
+            nativeSetShadowRecoveryMode(nativeHandle, pendingShadowRecoveryMode)
+            nativeSetShadowRecoveryEnabled(nativeHandle, pendingShadowRecoveryEnabled)
+            nativeSetHighlightRecoveryEnabled(nativeHandle, pendingHighlightRecoveryEnabled)
         }
         return nativeHandle != 0L
     }
@@ -105,6 +113,35 @@ class PixelLogEngine {
         }
     }
 
+    fun setEdrEnabled(enabled: Boolean) {
+        pendingEdrEnabled = enabled
+        setShadowRecoveryMode(if (enabled) 1 else 0)
+        setHighlightRecoveryEnabled(enabled)
+        if (nativeHandle != 0L) {
+            nativeSetEdrEnabled(nativeHandle, enabled)
+        }
+    }
+
+    fun setShadowRecoveryMode(mode: Int) {
+        pendingShadowRecoveryMode = mode
+        pendingShadowRecoveryEnabled = mode > 0
+        if (nativeHandle != 0L) {
+            nativeSetShadowRecoveryMode(nativeHandle, mode)
+            nativeSetShadowRecoveryEnabled(nativeHandle, mode > 0)
+        }
+    }
+
+    fun setShadowRecoveryEnabled(enabled: Boolean) {
+        setShadowRecoveryMode(if (enabled) 1 else 0)
+    }
+
+    fun setHighlightRecoveryEnabled(enabled: Boolean) {
+        pendingHighlightRecoveryEnabled = enabled
+        if (nativeHandle != 0L) {
+            nativeSetHighlightRecoveryEnabled(nativeHandle, enabled)
+        }
+    }
+
     fun updateFrameMetadata(
         timestampNs: Long,
         blackLevel: FloatArray,
@@ -159,6 +196,10 @@ class PixelLogEngine {
     private external fun nativeSetLutEnabled(handle: Long, enabled: Boolean)
     private external fun nativeSetBakeLutToEncoder(handle: Long, enabled: Boolean)
     private external fun nativeSetExposureGain(handle: Long, gain: Float)
+    private external fun nativeSetEdrEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetShadowRecoveryMode(handle: Long, mode: Int)
+    private external fun nativeSetShadowRecoveryEnabled(handle: Long, enabled: Boolean)
+    private external fun nativeSetHighlightRecoveryEnabled(handle: Long, enabled: Boolean)
     private external fun nativeUpdateFrameMetadata(
         handle: Long,
         timestampNs: Long,

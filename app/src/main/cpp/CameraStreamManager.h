@@ -27,6 +27,14 @@ public:
     void setLutEnabled(bool enabled);
     void setBakeLutToEncoder(bool enabled);
     void setExposureGain(float gain);
+    void setEdrEnabled(bool enabled);
+    bool isEdrEnabled() const { return mGpuPipeline.isEdrEnabled(); }
+    void setShadowRecoveryMode(int32_t mode);
+    int32_t getShadowRecoveryMode() const { return mGpuPipeline.getShadowRecoveryMode(); }
+    void setShadowRecoveryEnabled(bool enabled);
+    bool isShadowRecoveryEnabled() const { return mGpuPipeline.isShadowRecoveryEnabled(); }
+    void setHighlightRecoveryEnabled(bool enabled);
+    bool isHighlightRecoveryEnabled() const { return mGpuPipeline.isHighlightRecoveryEnabled(); }
     float getSceneExposureDelta() const { return mGpuPipeline.getSceneExposureDelta(); }
 
     void updateFrameMetadata(const SensorFrameMetadata& metadata);

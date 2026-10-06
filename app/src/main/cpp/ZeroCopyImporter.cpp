@@ -79,7 +79,8 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
                                                        int32_t height,
                                                        int32_t stride,
                                                        float blackLevel,
-                                                       float whiteLevel) {
+                                                       float whiteLevel,
+                                                       BayerPattern bayerPattern) {
     if (!hardwareBuffer) {
         LOGE("ZeroCopyImporter::importHardwareBufferToTexture: invalid arguments");
         return 0;
@@ -131,12 +132,17 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
 
         for (uint32_t y = yStart; y < yEnd; y += stepY) {
             const uint16_t* row = p16 + (y * rowStride);
+            const uint16_t* rowNext = p16 + ((y + 1) * rowStride);
             float dy = (float)y - halfH;
             float dySq = dy * dy;
             for (uint32_t x = xStart; x < xEnd; x += stepX) {
-                // In RGGB Bayer, row y (even) has Gr at odd x (x | 1u)
-                uint16_t rawGr = row[x | 1u];
-                float linear = std::max(0.0f, (float)rawGr - bl) * rangeInv;
+                // Sample green sensels based on Bayer CFA pattern:
+                // RGGB (0) & BGGR (3): Green is at (x+1, y) and (x, y+1)
+                // GRBG (1) & GBRG (2): Green is at (x, y) and (x+1, y+1)
+                float rawGr = (bayerPattern == BayerPattern::GRBG || bayerPattern == BayerPattern::GBRG)
+                    ? 0.5f * (float)(row[x] + rowNext[x + 1])
+                    : 0.5f * (float)(row[x + 1] + rowNext[x]);
+                float linear = std::max(0.0f, rawGr - bl) * rangeInv;
 
                 float dx = (float)x - halfW;
                 float distSq = dx * dx + dySq;
@@ -147,8 +153,12 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
             }
         }
 
-        // Target Middle Gray in sensor linear space: 2^-5.5 ~= 0.022097087
-        constexpr float TARGET_MIDDLE_GRAY = 0.022097087f;
+        // Target Middle Gray in sensor linear space: 2^-3.5 ~= 0.08838835f.
+        // Standard photographic Auto Exposure (ISO 12232 / Camera2 AE) meters 18% middle gray
+        // with ~3.5 stops of highlight headroom below sensor saturation (ADC clip).
+        // (Previously 2^-5.5 ~= 0.0221 was used, which assumed 5.5 stops of headroom,
+        // causing standard exposure at EV 0 to read +2.0 EV too high).
+        constexpr float TARGET_MIDDLE_GRAY = 0.08838835f;
         float meanY = (totalWeight > 0.0) ? (float)(weightedSum / totalWeight) : TARGET_MIDDLE_GRAY;
         float rawDeltaEv = std::log2(std::max(meanY, 1e-6f) / TARGET_MIDDLE_GRAY);
         float clampedDeltaEv = std::clamp(rawDeltaEv, -5.0f, 5.0f);

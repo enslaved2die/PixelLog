@@ -60,4 +60,7 @@ struct SensorFrameMetadata {
     int32_t shadingMapHeight;
     std::vector<float> shadingMapData; // [R, Gr, Gb, B] per grid cell
     bool hasShadingMap;
+    float radiometricExposure;     // Radiometric exposure factor
+    float noiseModelS;             // Noise model slope
+    float noiseModelO;             // Noise model offset
 };

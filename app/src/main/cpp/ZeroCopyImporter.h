@@ -21,7 +21,8 @@ public:
                                          int32_t height, 
                                          int32_t stride,
                                          float blackLevel = 256.0f,
-                                         float whiteLevel = 4095.0f);
+                                         float whiteLevel = 4095.0f,
+                                         BayerPattern bayerPattern = BayerPattern::RGGB);
 
     void destroyTexture(GLuint textureId);
 

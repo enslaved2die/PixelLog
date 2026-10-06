@@ -32,4 +32,7 @@
     <string name="label_stabilization">STABILIZATION</string>
     <string name="label_storage">STORAGE</string>
     <string name="content_desc_ev_meter">Exposure Level Meter</string>
+    <string name="label_edr">EDR</string>
+    <string name="label_shadow_recovery">SHADOWS</string>
+    <string name="label_highlight_recovery">HIGHLIGHTS</string>
 </resources>

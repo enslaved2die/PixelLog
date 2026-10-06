@@ -1440,7 +1440,7 @@ class CameraController(
 
             // The EV Display represents the scene's actual exposure level relative to 18% middle gray.
             // Measured photometrically from incoming RAW16 Bayer frame green sensels via zero-copy engine:
-            // Delta EV = log2(meanY_sensor / 2^-5.5), where 2^-5.5 (~0.0221) is nominal 18% middle gray in Pixel-Log.
+            // Delta EV = log2(meanY_sensor / 2^-3.5), where 2^-3.5 (~0.0884) is nominal 18% middle gray under standard camera AE.
             // - In Pure Manual mode: functions as a true Through-The-Lens (TTL) Light Meter / Metered Manual indicator,
             //   showing whether manual shutter/ISO are under- or overexposed relative to middle gray. EV compensation is ignored.
             // - In Semi-Auto & Full Auto modes: reflects convergence to target EV compensation, and deflects if sensor limits

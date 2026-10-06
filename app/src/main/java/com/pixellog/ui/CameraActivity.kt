@@ -236,6 +236,48 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         }
                     }
                 }
+                "com.pixellog.CYCLE_SHADOW_RECOVERY" -> {
+                    runOnUiThread {
+                        settingsShadowRecoveryGroup.performClick()
+                    }
+                }
+                "com.pixellog.CYCLE_HIGHLIGHT_RECOVERY" -> {
+                    runOnUiThread {
+                        settingsHighlightRecoveryGroup.performClick()
+                    }
+                }
+                "com.pixellog.SET_SHADOW_RECOVERY_MODE" -> {
+                    val modeVal = intent.getIntExtra("mode", 0)
+                    runOnUiThread {
+                        val mode = ShadowRecoveryMode.fromId(modeVal)
+                        currentShadowRecoveryMode = mode
+                        prefs.shadowRecoveryMode = mode.id
+                        engine.setShadowRecoveryMode(mode.id)
+                        isShadowRecoveryEnabled = mode != ShadowRecoveryMode.OFF
+                        isEdrEnabled = isShadowRecoveryEnabled || isHighlightRecoveryEnabled
+                        prefs.isEdrEnabled = isEdrEnabled
+                        updateSettingsDisplay()
+                    }
+                }
+                "com.pixellog.SET_HIGHLIGHT_RECOVERY" -> {
+                    val hlVal = intent.getBooleanExtra("enabled", false)
+                    runOnUiThread {
+                        isHighlightRecoveryEnabled = hlVal
+                        prefs.isHighlightRecoveryEnabled = isHighlightRecoveryEnabled
+                        engine.setHighlightRecoveryEnabled(isHighlightRecoveryEnabled)
+                        isEdrEnabled = isShadowRecoveryEnabled || isHighlightRecoveryEnabled
+                        prefs.isEdrEnabled = isEdrEnabled
+                        updateSettingsDisplay()
+                    }
+                }
+                "com.pixellog.SET_SIDECAR" -> {
+                    val sidecarVal = intent.getBooleanExtra("enabled", true)
+                    runOnUiThread {
+                        isSidecarEnabled = sidecarVal
+                        prefs.isSidecarEnabled = sidecarVal
+                        updateSettingsDisplay()
+                    }
+                }
             }
         }
     }
@@ -250,6 +292,21 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private var currentColorTransfer = PixelLogEncoderPipeline.ColorTransferMode.SDR_LOG
     private var isBakeLutActive = false
     private var isSidecarEnabled = false
+    private var isEdrEnabled = false
+
+    enum class ShadowRecoveryMode(val id: Int, val label: String, val subtitle: String) {
+        OFF(0, "OFF", "TEMPORAL DENOISE"),
+        HANDHELD(1, "HANDHELD", "TAA GHOST-FREE"),
+        STATIC(2, "STATIC", "MAX TRIPOD");
+
+        companion object {
+            fun fromId(id: Int): ShadowRecoveryMode = values().firstOrNull { it.id == id } ?: OFF
+        }
+    }
+
+    private var currentShadowRecoveryMode = ShadowRecoveryMode.OFF
+    private var isShadowRecoveryEnabled = false
+    private var isHighlightRecoveryEnabled = false
 
     // ── LUT Catalog state ──
     data class LutItem(
@@ -383,6 +440,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var textSettingsImportLut: TextView
     private lateinit var textSettingsMic: TextView
     private lateinit var textSettingsSidecar: TextView
+    private lateinit var settingsShadowRecoveryGroup: LinearLayout
+    private lateinit var textSettingsShadowRecovery: TextView
+    private lateinit var textSettingsShadowRecoverySub: TextView
+    private lateinit var settingsHighlightRecoveryGroup: LinearLayout
+    private lateinit var textSettingsHighlightRecovery: TextView
     private lateinit var textSettingsStorage: TextView
     private lateinit var textSettingsStorageSpeed: TextView
     private lateinit var textSettingsResolution: TextView
@@ -599,6 +661,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         currentColorTransfer = prefs.colorTransfer
         isBakeLutActive = prefs.isBakeLutActive
         isSidecarEnabled = prefs.isSidecarEnabled
+        currentShadowRecoveryMode = ShadowRecoveryMode.fromId(prefs.shadowRecoveryMode)
+        isShadowRecoveryEnabled = currentShadowRecoveryMode != ShadowRecoveryMode.OFF
+        isHighlightRecoveryEnabled = prefs.isHighlightRecoveryEnabled
+        isEdrEnabled = isShadowRecoveryEnabled || isHighlightRecoveryEnabled
+        engine.setShadowRecoveryMode(currentShadowRecoveryMode.id)
+        engine.setHighlightRecoveryEnabled(isHighlightRecoveryEnabled)
         
         // Camera controls (Focus, Shutter, WB, EV, ISO) start fresh in Auto mode on app start
         val default180Idx = get180ShutterIndexForFramerate(prefs.framerate)
@@ -664,6 +732,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             addAction("com.pixellog.RESET_FOCUS_EXPOSURE")
             addAction("com.pixellog.SET_EV")
             addAction("com.pixellog.SET_SHUTTER")
+            addAction("com.pixellog.CYCLE_SHADOW_RECOVERY")
+            addAction("com.pixellog.CYCLE_HIGHLIGHT_RECOVERY")
+            addAction("com.pixellog.SET_SHADOW_RECOVERY_MODE")
+            addAction("com.pixellog.SET_HIGHLIGHT_RECOVERY")
+            addAction("com.pixellog.SET_SIDECAR")
         }
         ContextCompat.registerReceiver(
             this,
@@ -698,6 +771,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textSettingsImportLut = findViewById(R.id.textSettingsImportLut)
         textSettingsMic = findViewById(R.id.textSettingsMic)
         textSettingsSidecar = findViewById(R.id.textSettingsSidecar)
+        settingsShadowRecoveryGroup = findViewById(R.id.settingsShadowRecoveryGroup)
+        textSettingsShadowRecovery = findViewById(R.id.textSettingsShadowRecovery)
+        textSettingsShadowRecoverySub = findViewById(R.id.textSettingsShadowRecoverySub)
+        settingsHighlightRecoveryGroup = findViewById(R.id.settingsHighlightRecoveryGroup)
+        textSettingsHighlightRecovery = findViewById(R.id.textSettingsHighlightRecovery)
         textSettingsStorage = findViewById(R.id.textSettingsStorage)
         textSettingsStorageSpeed = findViewById(R.id.textSettingsStorageSpeed)
         textSettingsResolution = findViewById(R.id.textSettingsResolution)
@@ -1292,6 +1370,32 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             cycleStorageTarget()
         }
 
+        // Row 4: Shadow Recovery mode cycle (OFF -> HANDHELD -> STATIC -> OFF)
+        settingsShadowRecoveryGroup.setOnClickListener {
+            val nextMode = when (currentShadowRecoveryMode) {
+                ShadowRecoveryMode.OFF -> ShadowRecoveryMode.HANDHELD
+                ShadowRecoveryMode.HANDHELD -> ShadowRecoveryMode.STATIC
+                ShadowRecoveryMode.STATIC -> ShadowRecoveryMode.OFF
+            }
+            currentShadowRecoveryMode = nextMode
+            prefs.shadowRecoveryMode = nextMode.id
+            engine.setShadowRecoveryMode(nextMode.id)
+            isShadowRecoveryEnabled = nextMode != ShadowRecoveryMode.OFF
+            isEdrEnabled = isShadowRecoveryEnabled || isHighlightRecoveryEnabled
+            prefs.isEdrEnabled = isEdrEnabled
+            updateSettingsDisplay()
+        }
+
+        // Row 4: Highlight Recovery toggle (OFF / ON)
+        settingsHighlightRecoveryGroup.setOnClickListener {
+            isHighlightRecoveryEnabled = !isHighlightRecoveryEnabled
+            prefs.isHighlightRecoveryEnabled = isHighlightRecoveryEnabled
+            engine.setHighlightRecoveryEnabled(isHighlightRecoveryEnabled)
+            isEdrEnabled = isShadowRecoveryEnabled || isHighlightRecoveryEnabled
+            prefs.isEdrEnabled = isEdrEnabled
+            updateSettingsDisplay()
+        }
+
         updateSettingsDisplay()
     }
 
@@ -1337,6 +1441,21 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textSettingsSidecar.text = if (isSidecarEnabled) "ON" else "OFF"
         textSettingsSidecar.setTextColor(
             if (isSidecarEnabled) ContextCompat.getColor(this, R.color.cyan_accent) else Color.WHITE
+        )
+
+        val isShadowActive = currentShadowRecoveryMode != ShadowRecoveryMode.OFF
+        textSettingsShadowRecovery.text = currentShadowRecoveryMode.label
+        textSettingsShadowRecoverySub.text = currentShadowRecoveryMode.subtitle
+        textSettingsShadowRecovery.setTextColor(
+            if (isShadowActive) ContextCompat.getColor(this, R.color.cyan_accent) else Color.WHITE
+        )
+        textSettingsShadowRecoverySub.setTextColor(
+            if (isShadowActive) ContextCompat.getColor(this, R.color.cyan_accent) else ContextCompat.getColor(this, R.color.text_secondary)
+        )
+
+        textSettingsHighlightRecovery.text = if (isHighlightRecoveryEnabled) "ON" else "OFF"
+        textSettingsHighlightRecovery.setTextColor(
+            if (isHighlightRecoveryEnabled) ContextCompat.getColor(this, R.color.cyan_accent) else Color.WHITE
         )
 
         val target = currentStorageTarget ?: storageTargetManager.getInternalTarget()
@@ -2102,8 +2221,16 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
                 put("ois_active", cameraController.stabilizationMode.oisMode != CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF && cameraController.currentLensHasOis)
                 put("eis_active", cameraController.stabilizationMode.eisMode != CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                put("edr_enabled", isEdrEnabled)
+                put("shadow_recovery_mode", currentShadowRecoveryMode.label)
+                put("shadow_recovery_enabled", currentShadowRecoveryMode != ShadowRecoveryMode.OFF)
+                put("highlight_recovery_enabled", isHighlightRecoveryEnabled)
             }
             root.put("camera", camObj)
+            root.put("edr_enabled", isEdrEnabled)
+            root.put("shadow_recovery_mode", currentShadowRecoveryMode.label)
+            root.put("shadow_recovery_enabled", currentShadowRecoveryMode != ShadowRecoveryMode.OFF)
+            root.put("highlight_recovery_enabled", isHighlightRecoveryEnabled)
 
             val csObj = JSONObject().apply {
                 put("curve_name", LogParams.CURVE_NAME)

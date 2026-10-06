@@ -112,6 +112,9 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateFrameMetadata(
     meta.whiteLevel = whiteLevel;
     meta.exposureGain = exposureGain > 0.0f ? exposureGain : 8.14587f;
     meta.hasShadingMap = false;
+    meta.radiometricExposure = 1.0f;
+    meta.noiseModelS = 0.0001f;
+    meta.noiseModelO = 0.00002f;
 
     if (blackLevelArr) {
         jfloat* bl = env->GetFloatArrayElements(blackLevelArr, nullptr);
@@ -173,6 +176,9 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateMetadata(
     meta.whiteLevel = whiteLevel;
     meta.exposureGain = 8.14587f;
     meta.hasShadingMap = false;
+    meta.radiometricExposure = 1.0f;
+    meta.noiseModelS = 0.0001f;
+    meta.noiseModelO = 0.00002f;
 
     if (blackLevelArr) {
         jfloat* bl = env->GetFloatArrayElements(blackLevelArr, nullptr);
@@ -246,6 +252,50 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeGetSceneExposureDelta(
     auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
     if (!manager) return 0.0f;
     return manager->getSceneExposureDelta();
+}
+
+JNIEXPORT void JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetEdrEnabled(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jlong handle,
+    jboolean enabled) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return;
+    manager->setEdrEnabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetShadowRecoveryMode(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jlong handle,
+    jint mode) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return;
+    manager->setShadowRecoveryMode(static_cast<int32_t>(mode));
+}
+
+JNIEXPORT void JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetShadowRecoveryEnabled(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jlong handle,
+    jboolean enabled) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return;
+    manager->setShadowRecoveryEnabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+Java_com_pixellog_nativebridge_PixelLogEngine_nativeSetHighlightRecoveryEnabled(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jlong handle,
+    jboolean enabled) {
+    auto* manager = reinterpret_cast<CameraStreamManager*>(handle);
+    if (!manager) return;
+    manager->setHighlightRecoveryEnabled(enabled == JNI_TRUE);
 }
 
 } // extern "C"

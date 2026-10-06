@@ -24,6 +24,10 @@ class CameraPreferences(private val prefs: SharedPreferences) {
         const val KEY_TRANSFER_MODE = "pref_transfer_mode"
         const val KEY_BAKE_LUT = "pref_bake_lut"
         const val KEY_GENERATE_SIDECAR = "pref_generate_sidecar"
+        const val KEY_EDR_ENABLED = "pref_edr_enabled"
+        const val KEY_SHADOW_RECOVERY_MODE = "pref_shadow_recovery_mode"
+        const val KEY_SHADOW_RECOVERY_ENABLED = "pref_shadow_recovery_enabled"
+        const val KEY_HIGHLIGHT_RECOVERY_ENABLED = "pref_highlight_recovery_enabled"
         const val KEY_STABILIZATION_MODE = "pref_stabilization_mode"
         const val KEY_SELECTED_LUT_ID = "pref_selected_lut_id"
 
@@ -112,6 +116,35 @@ class CameraPreferences(private val prefs: SharedPreferences) {
     var isSidecarEnabled: Boolean
         get() = prefs.getBoolean(KEY_GENERATE_SIDECAR, false)
         set(value) = prefs.edit().putBoolean(KEY_GENERATE_SIDECAR, value).apply()
+
+    var isEdrEnabled: Boolean
+        get() = prefs.getBoolean(KEY_EDR_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_EDR_ENABLED, value).apply()
+
+    var shadowRecoveryMode: Int
+        get() {
+            if (prefs.contains(KEY_SHADOW_RECOVERY_MODE)) {
+                return prefs.getInt(KEY_SHADOW_RECOVERY_MODE, 0).coerceIn(0, 2)
+            }
+            return if (prefs.getBoolean(KEY_SHADOW_RECOVERY_ENABLED, false)) 1 else 0
+        }
+        set(value) {
+            val clamped = value.coerceIn(0, 2)
+            prefs.edit()
+                .putInt(KEY_SHADOW_RECOVERY_MODE, clamped)
+                .putBoolean(KEY_SHADOW_RECOVERY_ENABLED, clamped > 0)
+                .apply()
+        }
+
+    var isShadowRecoveryEnabled: Boolean
+        get() = shadowRecoveryMode > 0
+        set(value) {
+            shadowRecoveryMode = if (value) 1 else 0
+        }
+
+    var isHighlightRecoveryEnabled: Boolean
+        get() = prefs.getBoolean(KEY_HIGHLIGHT_RECOVERY_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_HIGHLIGHT_RECOVERY_ENABLED, value).apply()
 
     var stabilizationMode: CameraController.StabilizationMode
         get() {

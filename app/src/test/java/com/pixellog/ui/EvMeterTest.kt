@@ -135,7 +135,7 @@ class EvMeterTest {
 
     @Test
     fun testPhotometricDeltaEvCalculation() {
-        val targetMiddleGray = 0.022097087f // 2^-5.5
+        val targetMiddleGray = 0.08838835f // 2^-3.5
 
         fun computeDeltaEv(meanLinearLuma: Float): Float {
             val rawDelta = (kotlin.math.ln(meanLinearLuma.coerceAtLeast(1e-6f) / targetMiddleGray) / kotlin.math.ln(2.0)).toFloat()

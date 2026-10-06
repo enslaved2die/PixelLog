@@ -163,6 +163,225 @@ void main() {
 }
 )glsl";
 
+static const char* EDR_DEBAYER_FRAGMENT_SHADER_SOURCE = R"glsl(#version 310 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+precision highp sampler2D;
+
+in vec2 vTexCoord;
+layout(location = 0) out vec4 outLogColor;
+layout(location = 1) out vec4 outHistoryColor;
+
+// Raw Sensor Uniforms
+uniform usampler2D uRawBayerTexture; // Raw 16-bit integer texture (GL_R16UI)
+uniform sampler2D  uLensShadingMap;   // Bilinear 2D Lens Shading Map (GL_RGBA16F or GL_RGBA32F)
+uniform ivec2 uSensorResolution;    // Sensor resolution e.g. (4080, 3064)
+uniform int uBayerPattern;          // 0: RGGB, 1: GRBG, 2: GBRG, 3: BGGR
+uniform vec4 uBlackLevel;           // Dynamic black level [R, Gr, Gb, B] (~256.0)
+uniform float uWhiteLevel;          // ADC white level (~4095.0)
+uniform int uHasLensShading;        // 1 if lens shading map is available, 0 otherwise
+
+// Color Science Uniforms
+uniform vec3 uNeutralColorPoint;    // SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+uniform mat3 uCompositeMatrix;      // Sensor -> Bradford -> Rec.2020 Exposed (column-major)
+
+// Pixel-Log Analytical Curve Parameters
+uniform float uLogYb;
+uniform float uLogBeta;
+uniform float uLogGamma;
+uniform float uLogDelta;
+uniform float uLogS;
+
+// EDR (Expanded Dynamic Range) Uniforms
+uniform sampler2D uHistoryTexture;  // Ping-pong temporal history buffer (Pixel-Log space)
+uniform int uTnrPrime;              // 1: Prime history without temporal blending, 0: Active TNR
+uniform int uHlrEnabled;            // 1: Active CFA highlight reconstruction & specular roll-off, 0: Disabled
+uniform int uTnrMode;               // 0: Disabled, 1: HANDHELD (TAA neighborhood clamp), 2: STATIC (Full bilateral)
+
+int getCfaChannel(ivec2 p, int pattern) {
+    int idx = ((p.y & 1) << 1) | (p.x & 1);
+    if (pattern == 0) {
+        return idx;
+    } else if (pattern == 1) {
+        return (idx == 0) ? 1 : (idx == 1) ? 0 : (idx == 2) ? 3 : 2;
+    } else if (pattern == 2) {
+        return (idx == 0) ? 2 : (idx == 1) ? 3 : (idx == 2) ? 0 : 1;
+    } else {
+        return 3 - idx;
+    }
+}
+
+float fetchLinearSample(ivec2 p, int pattern) {
+    p = clamp(p, ivec2(0), uSensorResolution - ivec2(1));
+    uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
+    float raw = float(rawInt);
+
+    int quadIdx = ((p.y & 1) << 1) | (p.x & 1);
+    float bl = uBlackLevel[quadIdx];
+    float wl = uWhiteLevel;
+
+    return (raw - bl) / max(wl - bl, 1e-6);
+}
+
+vec3 applyPixelLogOETF(vec3 x) {
+    vec3 logArg = max(x + vec3(uLogBeta), vec3(1e-8));
+    vec3 logVal = vec3(uLogGamma) * (log(logArg) * 1.4426950408889634) + vec3(uLogDelta);
+    vec3 toeVal = vec3(uLogYb) + vec3(uLogS) * x;
+    vec3 isNonNeg = step(vec3(0.0), x);
+    return mix(toeVal, logVal, isNonNeg);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    int centerCfa = getCfaChannel(p, uBayerPattern);
+
+    float c00 = fetchLinearSample(p, uBayerPattern);
+    float cN  = fetchLinearSample(p + ivec2( 0, -1), uBayerPattern);
+    float cS  = fetchLinearSample(p + ivec2( 0,  1), uBayerPattern);
+    float cW  = fetchLinearSample(p + ivec2(-1,  0), uBayerPattern);
+    float cE  = fetchLinearSample(p + ivec2( 1,  0), uBayerPattern);
+    float cNW = fetchLinearSample(p + ivec2(-1, -1), uBayerPattern);
+    float cNE = fetchLinearSample(p + ivec2( 1, -1), uBayerPattern);
+    float cSW = fetchLinearSample(p + ivec2(-1,  1), uBayerPattern);
+    float cSE = fetchLinearSample(p + ivec2( 1,  1), uBayerPattern);
+
+    vec3 debayeredRgb;
+    if (centerCfa == 0) {
+        debayeredRgb.r = c00;
+        float dH = abs(cW - cE);
+        float dV = abs(cN - cS);
+        debayeredRgb.g = (dH < dV) ? 0.5 * (cW + cE) : (dV < dH) ? 0.5 * (cN + cS) : 0.25 * (cW + cE + cN + cS);
+        debayeredRgb.b = 0.25 * (cNW + cNE + cSW + cSE);
+    } else if (centerCfa == 3) {
+        debayeredRgb.b = c00;
+        float dH = abs(cW - cE);
+        float dV = abs(cN - cS);
+        debayeredRgb.g = (dH < dV) ? 0.5 * (cW + cE) : (dV < dH) ? 0.5 * (cN + cS) : 0.25 * (cW + cE + cN + cS);
+        debayeredRgb.r = 0.25 * (cNW + cNE + cSW + cSE);
+    } else if (centerCfa == 1) {
+        debayeredRgb.g = c00;
+        debayeredRgb.r = 0.5 * (cW + cE);
+        debayeredRgb.b = 0.5 * (cN + cS);
+    } else {
+        debayeredRgb.g = c00;
+        debayeredRgb.b = 0.5 * (cW + cE);
+        debayeredRgb.r = 0.5 * (cN + cS);
+    }
+
+    if (uHasLensShading == 1) {
+        vec2 normUv = vec2(p) / vec2(uSensorResolution);
+        vec4 lsGains = texture(uLensShadingMap, normUv);
+        debayeredRgb.r *= lsGains.r;
+        debayeredRgb.g *= 0.5 * (lsGains.g + lsGains.b);
+        debayeredRgb.b *= lsGains.a;
+    }
+
+    vec3 neutral = max(uNeutralColorPoint, vec3(1e-4));
+
+    vec3 wbRgb;
+    if (uHlrEnabled == 1) {
+        // Highlight Recovery (HLR): reconstruct saturated channels using unclipped channel ratios
+        const float clipCeiling = 0.98;
+        vec3 rawClipped = step(vec3(clipCeiling), debayeredRgb);
+        float numClipped = rawClipped.r + rawClipped.g + rawClipped.b;
+
+        if (numClipped >= 1.0 && numClipped < 3.0) {
+            float unclippedRef = 0.0;
+            float neutralRef = 0.0;
+            if (rawClipped.g < 0.5) {
+                unclippedRef = debayeredRgb.g;
+                neutralRef = neutral.g;
+            } else if (rawClipped.r < 0.5) {
+                unclippedRef = debayeredRgb.r;
+                neutralRef = neutral.r;
+            } else {
+                unclippedRef = debayeredRgb.b;
+                neutralRef = neutral.b;
+            }
+
+            if (unclippedRef > 0.0 && neutralRef > 0.0) {
+                float estimatedLuma = unclippedRef / neutralRef;
+                if (rawClipped.r > 0.5) {
+                    debayeredRgb.r = max(debayeredRgb.r, estimatedLuma * neutral.r);
+                }
+                if (rawClipped.g > 0.5) {
+                    debayeredRgb.g = max(debayeredRgb.g, estimatedLuma * neutral.g);
+                }
+                if (rawClipped.b > 0.5) {
+                    debayeredRgb.b = max(debayeredRgb.b, estimatedLuma * neutral.b);
+                }
+            }
+        }
+
+        wbRgb = debayeredRgb / neutral;
+
+        // Specular highlight desaturation towards neutral white
+        float maxWb = max(wbRgb.r, max(wbRgb.g, wbRgb.b));
+        if (maxWb > 1.0) {
+            float excess = maxWb - 1.0;
+            float desatFactor = clamp(excess / 2.0, 0.0, 1.0);
+            wbRgb = mix(wbRgb, vec3(maxWb), desatFactor * 0.7);
+        }
+    } else {
+        wbRgb = debayeredRgb / neutral;
+        wbRgb = min(wbRgb, vec3(1.0));
+    }
+
+    vec3 linearWorking = uCompositeMatrix * wbRgb;
+    vec3 logCurrent = applyPixelLogOETF(linearWorking);
+    logCurrent = clamp(logCurrent, 0.0, 1.0);
+
+    // Temporal Noise Reduction (TNR) / Shadow Recovery
+    vec3 finalLogColor;
+    if (uTnrMode > 0) {
+        if (uTnrPrime == 1) {
+            finalLogColor = logCurrent;
+        } else if (uTnrMode == 1) {
+            // Mode 1: HANDHELD (TAA-style neighborhood color clamping + motion gating)
+            vec3 logPrev = texelFetch(uHistoryTexture, p, 0).rgb;
+            vec3 boxMin = max(logCurrent - vec3(0.05), vec3(0.0));
+            vec3 boxMax = min(logCurrent + vec3(0.05), vec3(1.0));
+            vec3 clampedPrev = clamp(logPrev, boxMin, boxMax);
+
+            vec3 diff3 = abs(logCurrent - clampedPrev);
+            float diffLuma = dot(diff3, vec3(0.2627, 0.6780, 0.0593));
+            float maxDiff = max(diffLuma, max(diff3.r, max(diff3.g, diff3.b)) * 0.75);
+
+            float avgLuma = dot(logCurrent, vec3(0.2627, 0.6780, 0.0593));
+            float shadowWeight = clamp(1.0 - (avgLuma - 0.09) / 0.35, 0.0, 1.0);
+            float motionFactor = smoothstep(0.03, 0.14, maxDiff);
+
+            float maxHistoryAlpha = mix(0.10, 0.55, shadowWeight);
+            float historyAlpha = maxHistoryAlpha * (1.0 - motionFactor);
+
+            finalLogColor = mix(logCurrent, clampedPrev, historyAlpha);
+        } else {
+            // Mode 2: STATIC (Full bilateral temporal denoising for tripod / locked-off shots)
+            vec3 logPrev = texelFetch(uHistoryTexture, p, 0).rgb;
+            vec3 diff3 = abs(logCurrent - logPrev);
+            float diffLuma = dot(diff3, vec3(0.2627, 0.6780, 0.0593));
+            float maxDiff = max(diffLuma, max(diff3.r, max(diff3.g, diff3.b)) * 0.75);
+
+            float avgLuma = dot(logCurrent, vec3(0.2627, 0.6780, 0.0593));
+            float shadowWeight = clamp(1.0 - (avgLuma - 0.09) / 0.35, 0.0, 1.0);
+            float motionFactor = smoothstep(0.05, 0.22, maxDiff);
+
+            float maxHistoryAlpha = mix(0.15, 0.85, shadowWeight);
+            float historyAlpha = maxHistoryAlpha * (1.0 - motionFactor);
+
+            finalLogColor = mix(logCurrent, logPrev, historyAlpha);
+        }
+    } else {
+        finalLogColor = logCurrent;
+    }
+
+    vec4 outColor = vec4(clamp(finalLogColor, 0.0, 1.0), 1.0);
+    outLogColor = outColor;
+    outHistoryColor = outColor;
+}
+)glsl";
+
 static const char* LUT_FRAGMENT_SHADER_SOURCE = R"glsl(#version 310 es
 precision highp float;
 precision highp sampler2D;
@@ -206,6 +425,15 @@ GpuPipeline::GpuPipeline()
       mIsLutEnabled(true),
       mBakeLutToEncoder(false),
       mExposureGain(pixellog::LOG_XMAX),
+      mEdrEnabled(false),
+      mResetHistory(true),
+      mEdrProgram(0),
+      mEdrFbo(0),
+      mHistoryTextures{0, 0},
+      mHistoryWidth(0),
+      mHistoryHeight(0),
+      mHistoryReadIdx(0),
+      mHistoryWriteIdx(1),
       mEglDisplay(EGL_NO_DISPLAY),
       mEglConfig(nullptr),
       mEglContext(EGL_NO_CONTEXT),
@@ -238,6 +466,7 @@ bool GpuPipeline::initialize(int32_t width, int32_t height) {
     std::lock_guard<std::mutex> lock(mPipelineMutex);
     mWidth = width;
     mHeight = height;
+    mResetHistory.store(true);
 
     if (!initEGL()) {
         LOGE("GpuPipeline: Failed to initialize EGL");
@@ -430,9 +659,10 @@ GLuint GpuPipeline::createProgram(const char* vertSource, const char* fragSource
 
 bool GpuPipeline::initShaders() {
     mDebayerProgram = createProgram(VERTEX_SHADER_SOURCE, DEBAYER_FRAGMENT_SHADER_SOURCE);
+    mEdrProgram = createProgram(VERTEX_SHADER_SOURCE, EDR_DEBAYER_FRAGMENT_SHADER_SOURCE);
     mLutProgram = createProgram(VERTEX_SHADER_SOURCE, LUT_FRAGMENT_SHADER_SOURCE);
     mPassthroughProgram = createProgram(VERTEX_SHADER_SOURCE, PASSTHROUGH_FRAGMENT_SHADER_SOURCE);
-    return (mDebayerProgram != 0 && mLutProgram != 0 && mPassthroughProgram != 0);
+    return (mDebayerProgram != 0 && mEdrProgram != 0 && mLutProgram != 0 && mPassthroughProgram != 0);
 }
 
 bool GpuPipeline::initFBO() {
@@ -458,6 +688,58 @@ bool GpuPipeline::initFBO() {
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return true;
+}
+
+bool GpuPipeline::initEdrResources() {
+    releaseEdrResources();
+
+    glGenTextures(2, mHistoryTextures);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, mHistoryTextures[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGB10_A2, mWidth, mHeight);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glGenFramebuffers(1, &mEdrFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, mEdrFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mOffscreenTexture, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, mHistoryTextures[1], 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOGE("GpuPipeline: EDR Framebuffer incomplete: 0x%x", status);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    mHistoryWidth = mWidth;
+    mHistoryHeight = mHeight;
+    mHistoryReadIdx = 0;
+    mHistoryWriteIdx = 1;
+    mResetHistory.store(true);
+    LOGI("GpuPipeline: Initialized EDR resources for %dx%d", mWidth, mHeight);
+    return true;
+}
+
+void GpuPipeline::releaseEdrResources() {
+    if (mEdrFbo != 0) {
+        glDeleteFramebuffers(1, &mEdrFbo);
+        mEdrFbo = 0;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (mHistoryTextures[i] != 0) {
+            glDeleteTextures(1, &mHistoryTextures[i]);
+            mHistoryTextures[i] = 0;
+        }
+    }
+    mHistoryWidth = 0;
+    mHistoryHeight = 0;
+    mResetHistory.store(true);
 }
 
 bool GpuPipeline::setEncoderSurface(ANativeWindow* encoderWindow) {
@@ -529,6 +811,28 @@ void GpuPipeline::setLutEnabled(bool enabled) {
 
 void GpuPipeline::setExposureGain(float gain) {
     mExposureGain.store(gain);
+}
+
+void GpuPipeline::setEdrEnabled(bool enabled) {
+    mEdrEnabled.store(enabled);
+    setShadowRecoveryMode(enabled ? 1 : 0);
+    setHighlightRecoveryEnabled(enabled);
+}
+
+void GpuPipeline::setShadowRecoveryMode(int32_t mode) {
+    int32_t prev = mShadowRecoveryMode.exchange(mode);
+    mShadowRecoveryEnabled.store(mode > 0);
+    if (prev == 0 && mode > 0) {
+        mResetHistory.store(true);
+    }
+}
+
+void GpuPipeline::setShadowRecoveryEnabled(bool enabled) {
+    setShadowRecoveryMode(enabled ? 1 : 0);
+}
+
+void GpuPipeline::setHighlightRecoveryEnabled(bool enabled) {
+    mHighlightRecoveryEnabled.store(enabled);
 }
 
 bool GpuPipeline::isLutEnabled() const {
@@ -609,7 +913,7 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     }
 
     // 2. Import AHardwareBuffer to raw integer texture (executing on processing thread with valid context!)
-    GLuint rawTexture = mImporter.importHardwareBufferToTexture(rawBuffer, mWidth, mHeight, stride, metadata.dynamicBlackLevel.gr, metadata.whiteLevel);
+    GLuint rawTexture = mImporter.importHardwareBufferToTexture(rawBuffer, mWidth, mHeight, stride, metadata.dynamicBlackLevel.gr, metadata.whiteLevel, metadata.bayerPattern);
     if (rawTexture == 0) {
         LOGE("GpuPipeline: Failed to import raw hardware buffer to texture");
         return;
@@ -618,79 +922,185 @@ void GpuPipeline::processFrame(AHardwareBuffer* rawBuffer,
     // =========================================================================
     // PASS 1: Debayer + Color Matrix + Pixel-Log OETF -> Offscreen FBO
     // =========================================================================
-    glBindFramebuffer(GL_FRAMEBUFFER, mOffscreenFbo);
-    glViewport(0, 0, mWidth, mHeight);
+    int32_t shadowMode = mShadowRecoveryMode.load();
+    bool highlightEnabled = mHighlightRecoveryEnabled.load();
+    bool isEdr = (shadowMode > 0) || highlightEnabled;
+    if (!isEdr) {
+        // LEGACY PATH: Zero history texture binds, zero extra DRAM traffic, 100% bit-identical
+        glBindFramebuffer(GL_FRAMEBUFFER, mOffscreenFbo);
+        GLenum drawBuf = GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1, &drawBuf);
+        glViewport(0, 0, mWidth, mHeight);
 
-    glUseProgram(mDebayerProgram);
+        glUseProgram(mDebayerProgram);
 
-    // Bind uniforms
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, rawTexture);
-    glUniform1i(glGetUniformLocation(mDebayerProgram, "uRawBayerTexture"), 0);
-
-    glUniform2i(glGetUniformLocation(mDebayerProgram, "uSensorResolution"), mWidth, mHeight);
-    glUniform1i(glGetUniformLocation(mDebayerProgram, "uBayerPattern"), static_cast<int32_t>(metadata.bayerPattern));
-    glUniform4f(glGetUniformLocation(mDebayerProgram, "uBlackLevel"),
-               metadata.dynamicBlackLevel.r,
-               metadata.dynamicBlackLevel.gr,
-               metadata.dynamicBlackLevel.gb,
-               metadata.dynamicBlackLevel.b);
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uWhiteLevel"), metadata.whiteLevel);
-
-    // Color Science Uniforms (Phase 2 & Phase 3)
-    // 1. Lens Shading Map (Phase 2.2)
-    if (metadata.hasShadingMap && metadata.shadingMapWidth > 0 && metadata.shadingMapHeight > 0 && !metadata.shadingMapData.empty()) {
-        glActiveTexture(GL_TEXTURE1);
-        if (mLensShadingTexture == 0 || mLensShadingWidth != metadata.shadingMapWidth || mLensShadingHeight != metadata.shadingMapHeight) {
-            if (mLensShadingTexture != 0) glDeleteTextures(1, &mLensShadingTexture);
-            glGenTextures(1, &mLensShadingTexture);
-            glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shadingMapWidth, metadata.shadingMapHeight, 0, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
-            mLensShadingWidth = metadata.shadingMapWidth;
-            mLensShadingHeight = metadata.shadingMapHeight;
-        } else {
-            glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, metadata.shadingMapWidth, metadata.shadingMapHeight, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
-        }
-        glUniform1i(glGetUniformLocation(mDebayerProgram, "uLensShadingMap"), 1);
-        glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 1);
+        // Bind uniforms
         glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, rawTexture);
+        glUniform1i(glGetUniformLocation(mDebayerProgram, "uRawBayerTexture"), 0);
+
+        glUniform2i(glGetUniformLocation(mDebayerProgram, "uSensorResolution"), mWidth, mHeight);
+        glUniform1i(glGetUniformLocation(mDebayerProgram, "uBayerPattern"), static_cast<int32_t>(metadata.bayerPattern));
+        glUniform4f(glGetUniformLocation(mDebayerProgram, "uBlackLevel"),
+                   metadata.dynamicBlackLevel.r,
+                   metadata.dynamicBlackLevel.gr,
+                   metadata.dynamicBlackLevel.gb,
+                   metadata.dynamicBlackLevel.b);
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uWhiteLevel"), metadata.whiteLevel);
+
+        // Color Science Uniforms (Phase 2 & Phase 3)
+        // 1. Lens Shading Map (Phase 2.2)
+        if (metadata.hasShadingMap && metadata.shadingMapWidth > 0 && metadata.shadingMapHeight > 0 && !metadata.shadingMapData.empty()) {
+            glActiveTexture(GL_TEXTURE1);
+            if (mLensShadingTexture == 0 || mLensShadingWidth != metadata.shadingMapWidth || mLensShadingHeight != metadata.shadingMapHeight) {
+                if (mLensShadingTexture != 0) glDeleteTextures(1, &mLensShadingTexture);
+                glGenTextures(1, &mLensShadingTexture);
+                glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shadingMapWidth, metadata.shadingMapHeight, 0, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+                mLensShadingWidth = metadata.shadingMapWidth;
+                mLensShadingHeight = metadata.shadingMapHeight;
+            } else {
+                glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, metadata.shadingMapWidth, metadata.shadingMapHeight, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+            }
+            glUniform1i(glGetUniformLocation(mDebayerProgram, "uLensShadingMap"), 1);
+            glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 1);
+            glActiveTexture(GL_TEXTURE0);
+        } else {
+            glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 0);
+        }
+
+        // 2. White Balance: SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
+        float nR = metadata.neutralColorPoint[0] > 0.0f ? metadata.neutralColorPoint[0] : 0.55f;
+        float nG = metadata.neutralColorPoint[1] > 0.0f ? metadata.neutralColorPoint[1] : 1.0f;
+        float nB = metadata.neutralColorPoint[2] > 0.0f ? metadata.neutralColorPoint[2] : 0.70f;
+        glUniform3f(glGetUniformLocation(mDebayerProgram, "uNeutralColorPoint"), nR, nG, nB);
+
+        // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear + Exposure Gain)
+        glUniformMatrix3fv(glGetUniformLocation(mDebayerProgram, "uCompositeMatrix"), 1, GL_FALSE, metadata.compositeMatrix);
+
+        // 4. Pixel-Log Analytical Curve Parameters
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogYb"), pixellog::LOG_YB);
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogBeta"), pixellog::LOG_BETA);
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogGamma"), pixellog::LOG_GAMMA);
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogDelta"), pixellog::LOG_DELTA);
+        glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogS"), pixellog::LOG_S);
+
+        // Draw fullscreen quad
+        glBindBuffer(GL_ARRAY_BUFFER, mQuadVbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        glUniform1i(glGetUniformLocation(mDebayerProgram, "uHasLensShading"), 0);
+        // EDR PATH: Combining HLR (Highlight Recovery) and TNR (Shadow Recovery)
+        if (mHistoryWidth != mWidth || mHistoryHeight != mHeight || mHistoryTextures[0] == 0) {
+            initEdrResources();
+        }
+
+        bool tnrPrime = mResetHistory.exchange(false);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, mEdrFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, mOffscreenTexture, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, mHistoryTextures[mHistoryWriteIdx], 0);
+
+        GLenum drawBuffers[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+        glDrawBuffers(2, drawBuffers);
+        glViewport(0, 0, mWidth, mHeight);
+
+        glUseProgram(mEdrProgram);
+
+        // Bind raw texture unit 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, rawTexture);
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uRawBayerTexture"), 0);
+
+        glUniform2i(glGetUniformLocation(mEdrProgram, "uSensorResolution"), mWidth, mHeight);
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uBayerPattern"), static_cast<int32_t>(metadata.bayerPattern));
+        glUniform4f(glGetUniformLocation(mEdrProgram, "uBlackLevel"),
+                   metadata.dynamicBlackLevel.r,
+                   metadata.dynamicBlackLevel.gr,
+                   metadata.dynamicBlackLevel.gb,
+                   metadata.dynamicBlackLevel.b);
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uWhiteLevel"), metadata.whiteLevel);
+
+        // Lens Shading Map
+        if (metadata.hasShadingMap && metadata.shadingMapWidth > 0 && metadata.shadingMapHeight > 0 && !metadata.shadingMapData.empty()) {
+            glActiveTexture(GL_TEXTURE1);
+            if (mLensShadingTexture == 0 || mLensShadingWidth != metadata.shadingMapWidth || mLensShadingHeight != metadata.shadingMapHeight) {
+                if (mLensShadingTexture != 0) glDeleteTextures(1, &mLensShadingTexture);
+                glGenTextures(1, &mLensShadingTexture);
+                glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shadingMapWidth, metadata.shadingMapHeight, 0, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+                mLensShadingWidth = metadata.shadingMapWidth;
+                mLensShadingHeight = metadata.shadingMapHeight;
+            } else {
+                glBindTexture(GL_TEXTURE_2D, mLensShadingTexture);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, metadata.shadingMapWidth, metadata.shadingMapHeight, GL_RGBA, GL_FLOAT, metadata.shadingMapData.data());
+            }
+            glUniform1i(glGetUniformLocation(mEdrProgram, "uLensShadingMap"), 1);
+            glUniform1i(glGetUniformLocation(mEdrProgram, "uHasLensShading"), 1);
+        } else {
+            glUniform1i(glGetUniformLocation(mEdrProgram, "uHasLensShading"), 0);
+        }
+
+        // Bind history texture unit 2
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, mHistoryTextures[mHistoryReadIdx]);
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uHistoryTexture"), 2);
+        glActiveTexture(GL_TEXTURE0);
+
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uHlrEnabled"), highlightEnabled ? 1 : 0);
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uTnrMode"), shadowMode);
+        glUniform1i(glGetUniformLocation(mEdrProgram, "uTnrPrime"), tnrPrime ? 1 : 0);
+
+        // White Balance
+        float nR = metadata.neutralColorPoint[0] > 0.0f ? metadata.neutralColorPoint[0] : 0.55f;
+        float nG = metadata.neutralColorPoint[1] > 0.0f ? metadata.neutralColorPoint[1] : 1.0f;
+        float nB = metadata.neutralColorPoint[2] > 0.0f ? metadata.neutralColorPoint[2] : 0.70f;
+        glUniform3f(glGetUniformLocation(mEdrProgram, "uNeutralColorPoint"), nR, nG, nB);
+
+        // Composite Matrix
+        glUniformMatrix3fv(glGetUniformLocation(mEdrProgram, "uCompositeMatrix"), 1, GL_FALSE, metadata.compositeMatrix);
+
+        // Pixel-Log Analytical Curve Parameters
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uLogYb"), pixellog::LOG_YB);
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uLogBeta"), pixellog::LOG_BETA);
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uLogGamma"), pixellog::LOG_GAMMA);
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uLogDelta"), pixellog::LOG_DELTA);
+        glUniform1f(glGetUniformLocation(mEdrProgram, "uLogS"), pixellog::LOG_S);
+
+        // Draw fullscreen quad
+        glBindBuffer(GL_ARRAY_BUFFER, mQuadVbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+        // Ping-pong history buffers
+        mHistoryReadIdx = mHistoryWriteIdx;
+        mHistoryWriteIdx = 1 - mHistoryWriteIdx;
     }
-
-    // 2. White Balance: SENSOR_NEUTRAL_COLOR_POINT [Rn, Gn, Bn]
-    float nR = metadata.neutralColorPoint[0] > 0.0f ? metadata.neutralColorPoint[0] : 0.55f;
-    float nG = metadata.neutralColorPoint[1] > 0.0f ? metadata.neutralColorPoint[1] : 1.0f;
-    float nB = metadata.neutralColorPoint[2] > 0.0f ? metadata.neutralColorPoint[2] : 0.70f;
-    glUniform3f(glGetUniformLocation(mDebayerProgram, "uNeutralColorPoint"), nR, nG, nB);
-
-    // 3. Composite Matrix (Sensor -> Bradford -> Rec.2020 Linear + Exposure Gain)
-    glUniformMatrix3fv(glGetUniformLocation(mDebayerProgram, "uCompositeMatrix"), 1, GL_FALSE, metadata.compositeMatrix);
-
-    // 4. Pixel-Log Analytical Curve Parameters
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogYb"), pixellog::LOG_YB);
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogBeta"), pixellog::LOG_BETA);
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogGamma"), pixellog::LOG_GAMMA);
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogDelta"), pixellog::LOG_DELTA);
-    glUniform1f(glGetUniformLocation(mDebayerProgram, "uLogS"), pixellog::LOG_S);
-
-    // Draw fullscreen quad
-    glBindBuffer(GL_ARRAY_BUFFER, mQuadVbo);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-    glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // Cleanup raw input texture
     mImporter.destroyTexture(rawTexture);
@@ -836,6 +1246,11 @@ void GpuPipeline::release() {
         glDeleteProgram(mDebayerProgram);
         mDebayerProgram = 0;
     }
+    if (mEdrProgram != 0) {
+        glDeleteProgram(mEdrProgram);
+        mEdrProgram = 0;
+    }
+    releaseEdrResources();
     if (mLutProgram != 0) {
         glDeleteProgram(mLutProgram);
         mLutProgram = 0;

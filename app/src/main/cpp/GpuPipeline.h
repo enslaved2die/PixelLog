@@ -31,8 +31,17 @@ public:
     void setLutEnabled(bool enabled);
     void setBakeLutToEncoder(bool enabled) { mBakeLutToEncoder.store(enabled); }
     void setExposureGain(float gain);
+    void setEdrEnabled(bool enabled);
+    void setShadowRecoveryMode(int32_t mode);
+    void setShadowRecoveryEnabled(bool enabled);
+    void setHighlightRecoveryEnabled(bool enabled);
     bool isLutEnabled() const;
     bool isBakeLutToEncoder() const { return mBakeLutToEncoder.load(); }
+    bool isEdrEnabled() const { return mEdrEnabled.load(); }
+    int32_t getShadowRecoveryMode() const { return mShadowRecoveryMode.load(); }
+    bool isShadowRecoveryEnabled() const { return mShadowRecoveryEnabled.load(); }
+    bool isHighlightRecoveryEnabled() const { return mHighlightRecoveryEnabled.load(); }
+    void resetHistory() { mResetHistory.store(true); }
     float getExposureGain() const;
     float getSceneExposureDelta() const { return mImporter.getSceneExposureDelta(); }
 
@@ -55,6 +64,20 @@ private:
     std::atomic<bool> mIsLutEnabled;
     std::atomic<bool> mBakeLutToEncoder{false};
     std::atomic<float> mExposureGain;
+    std::atomic<bool> mEdrEnabled{false};
+    std::atomic<int32_t> mShadowRecoveryMode{0};
+    std::atomic<bool> mShadowRecoveryEnabled{false};
+    std::atomic<bool> mHighlightRecoveryEnabled{false};
+    std::atomic<bool> mResetHistory{true};
+
+    // EDR resources
+    GLuint mEdrProgram;
+    GLuint mEdrFbo;
+    GLuint mHistoryTextures[2];
+    int32_t mHistoryWidth;
+    int32_t mHistoryHeight;
+    int32_t mHistoryReadIdx;
+    int32_t mHistoryWriteIdx;
 
     // EGL Context & Display
     EGLDisplay mEglDisplay;
@@ -104,6 +127,8 @@ private:
     bool initEGL();
     bool initShaders();
     bool initFBO();
+    bool initEdrResources();
+    void releaseEdrResources();
     GLuint compileShader(GLenum type, const char* source);
     GLuint createProgram(const char* vertSource, const char* fragSource);
 };

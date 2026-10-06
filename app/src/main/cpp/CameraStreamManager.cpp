@@ -20,6 +20,9 @@ CameraStreamManager::CameraStreamManager()
     mCurrentMetadata.neutralColorPoint[2] = 0.70f;
     mCurrentMetadata.exposureGain = 8.14587f;
     mCurrentMetadata.hasShadingMap = false;
+    mCurrentMetadata.radiometricExposure = 1.0f;
+    mCurrentMetadata.noiseModelS = 0.0001f;
+    mCurrentMetadata.noiseModelO = 0.00002f;
     for (int i = 0; i < 9; ++i) mCurrentMetadata.compositeMatrix[i] = (i % 4 == 0) ? 1.0f : 0.0f;
 }
 
@@ -230,6 +233,22 @@ void CameraStreamManager::setBakeLutToEncoder(bool enabled) {
 
 void CameraStreamManager::setExposureGain(float gain) {
     mGpuPipeline.setExposureGain(gain);
+}
+
+void CameraStreamManager::setEdrEnabled(bool enabled) {
+    mGpuPipeline.setEdrEnabled(enabled);
+}
+
+void CameraStreamManager::setShadowRecoveryMode(int32_t mode) {
+    mGpuPipeline.setShadowRecoveryMode(mode);
+}
+
+void CameraStreamManager::setShadowRecoveryEnabled(bool enabled) {
+    mGpuPipeline.setShadowRecoveryEnabled(enabled);
+}
+
+void CameraStreamManager::setHighlightRecoveryEnabled(bool enabled) {
+    mGpuPipeline.setHighlightRecoveryEnabled(enabled);
 }
 
 void CameraStreamManager::updateFrameMetadata(const SensorFrameMetadata& metadata) {
