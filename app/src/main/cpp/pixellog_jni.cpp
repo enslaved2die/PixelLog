@@ -121,7 +121,7 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateFrameMetadata(
         meta.dynamicBlackLevel = { bl[0], bl[1], bl[2], bl[3] };
         env->ReleaseFloatArrayElements(blackLevelArr, bl, JNI_ABORT);
     } else {
-        meta.dynamicBlackLevel = { 256.0f, 256.0f, 256.0f, 256.0f };
+        meta.dynamicBlackLevel = { 64.0f, 64.0f, 64.0f, 64.0f };
     }
 
     if (neutralPointArr) {
@@ -185,7 +185,7 @@ Java_com_pixellog_nativebridge_PixelLogEngine_nativeUpdateMetadata(
         meta.dynamicBlackLevel = { bl[0], bl[1], bl[2], bl[3] };
         env->ReleaseFloatArrayElements(blackLevelArr, bl, JNI_ABORT);
     } else {
-        meta.dynamicBlackLevel = { 256.0f, 256.0f, 256.0f, 256.0f };
+        meta.dynamicBlackLevel = { 64.0f, 64.0f, 64.0f, 64.0f };
     }
 
     if (gainsArr) {

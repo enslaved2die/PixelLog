@@ -13,20 +13,24 @@
 ## 1. Architectural Highlights
 
 * **True 4:3 Open-Gate Ingestion:** Reads the uncropped active sensor matrix ($4080 \times 3072$) using hardware quad-binned `RAW_SENSOR`, preserving 100% field of view without anamorphic crop factor. Supported framerates are **24, 29.97, and 30 fps** — 25/48/50/60 fps modes were removed due to hardware instability on the Tensor G6 RAW_SENSOR pipeline.
-* **Preserved Dual Conversion Gain (DCG):** Automatically tracks the sensor's hardware floating-diffusion capacitor transitions (LCG at ISO 50–320 for 40,000 $e^-$ full-well capacity and 12.8 stops DR; HCG at ISO 400+ for 60% read noise reduction and 12.5 stops DR).
+* **Adaptive 10/12-Bit iDCG Normalisation:** The debayer shader and `ZeroCopyImporter` detect the active sensor bit depth at runtime from `SENSOR_INFO_WHITE_LEVEL` — lenses 1× and 5× capture at 10-bit ($\text{white level} = 1023$, $\text{black} \approx 64$) while the primary 0× sensor enters 12-bit iDCG mode ($\text{white level} = 4095$, $\text{black} \approx 256$). The normalisation formula `max(0.0, (raw − bl) / max(1.0, wl − bl))` cleanly handles both ranges without branching.
+* **Preserved Dual Conversion Gain (DCG):** Automatically tracks the sensor's hardware floating-diffusion capacitor transitions (LCG at ISO 50–320 for 40,000 $e^-$ full-well capacity and 12.8 stops DR; HCG at ISO 400+ for 60% read noise reduction and 12.5 stops DR). Active iDCG mode and bit depth are included in the JSON sidecar.
 * **Bespoke "Pixel-Log" Curve ($\sinh^{-1}$):** Replaces piecewise Apple Log with a branchless Inverse Hyperbolic Sine transfer function. Delivers a **55.5% reduction in GPU ALU instruction load**, eliminates SIMD warp divergence on mobile TBDR GPUs, maps 18% middle grey to cinema standard 0.4000 (code 410), and preserves +6.47 stops of highlight headroom up to $R = 16.0$ (14.2 stops total DR).
 * **Bradford-Adapted Color Matrix:** Pre-multiplies sensor spectral sensitivities into standard linear BT.2020 before log compression, permanently eliminating skin-tone hue twisting and metameric failure under narrow-band spectra.
 * **EDR (Expanded Dynamic Range) Pipeline:** A second GPU pass (`edr_debayer_pixel_log.frag`) runs a full TAA-style temporal accumulation loop with a ping-pong history buffer pair. Three independently togglable sub-features: **TNR** (Temporal Noise Reduction — HANDHELD mode uses TAA neighbourhood clamp to suppress ghosting; STATIC mode runs a full bilateral filter for maximum noise suppression in locked shots), **Shadow Recovery** (multi-frame lifted shadow SNR), and **Highlight Recovery / Specular Roll-off** (CFA-level highlight reconstruction with graceful roll to white).
 * **Dual-Surface Zero-Stall Rendering:** Multi-threaded shared EGL contexts eliminate `eglMakeCurrent` stalls (saving 1–5 ms/frame), simultaneously routing clean 10-bit Log to `MediaCodec` and a graded preview to the viewfinder `SurfaceView`.
-* **LUT Bake-to-Encoder:** Optional GPU Pass 2 mode burns the active 3D LUT directly into the 10-bit recording stream with automatic color space signaling — SDR LUTs tag `BT.709 / SDR`, AgX HLG tags `BT.2020 / HLG` for native HDR playback up to 1000 nits.
+* **LUT Bake-to-Encoder:** Optional GPU Pass 2 mode burns the active 3D LUT directly into the 10-bit recording stream with automatic color space signaling — SDR LUTs tag `BT.709 / SDR`, AgX HLG tags `BT.2020 / HLG` for native HDR playback up to 1000 nits. Imported user LUTs can be deleted via long-press.
+* **False Colour Monitoring LUT:** `PixelLog_FalseColor_33.cube` (33 pt, included in `post_production/`) maps the Pixel-Log code range to a calibrated false colour scale for on-set exposure verification in DaVinci Resolve or any compatible NLE.
 * **Hardware Synchronization:** Non-blocking Linux sync fences (`EGL_SYNC_NATIVE_FENCE_ANDROID`) paired with `AImageReader_acquireNextImageAsync` and `AImage_deleteAsync`, maintaining a strictly regulated 3-buffer circular pool with 33.33 ms cadence and zero race conditions.
 * **Hardened 10-Bit HEVC Bitstream:** Tags the MP4 container with BT.2020 metadata (`KEY_COLOR_STANDARD`, `KEY_COLOR_RANGE`, `KEY_COLOR_TRANSFER`), locks $PTS == DTS$ with zero B-frames to prevent `MediaMuxer` crashes, and prevents Adobe Premiere Pro's black-crush bug. Bitrate presets up to **220 Mbps**.
-* **Multi-Lens Switching:** Seamlessly routes between physical 0.5×, 1×, and 5× sensors (12 mm / 24 mm / 120 mm equiv.) with per-lens `SensorProfile` (ISO range, exposure time range, focus distance range, DCG threshold, OIS flags) cached at session open.
+* **Multi-Lens Switching:** Seamlessly routes between physical 0.5×, 1×, and 5× sensors (12 mm / 24 mm / 120 mm equiv.) with per-lens `SensorProfile` (ISO range, exposure time range, focus distance range, DCG threshold, OIS flags) cached at session open. `selectRawStreamDimensions()` picks the largest 4:3 stream with width ≤ 4200 px per lens.
 * **Stabilization Modes:** OFF / OIS / **GYRO** — GYRO mode disables OIS entirely and starts `GyroflowTelemetryLogger`, writing a frame-accurate Gyroflow CSV 1.3 (`.gcsv`) sidecar for post-stabilization in Gyroflow / DaVinci Resolve. *(EIS and FULL hybrid modes are defined but not yet implemented.)* **Note:** Gyroflow lens calibration profiles for the Pixel 11 Pro 0.5×, 1×, and 5× lenses do not yet exist — footage must be processed with the "plain" preset or a user-supplied calibration until official profiles are contributed to the Gyroflow lens database.
+* **Closed-Loop Semi-Auto AE (refined):** Semi-auto ISO Priority and Shutter Priority modes now converge every **2 frames** (down from 8) with a proportional step clamped to ±0.12 EV per update. The settled deadband is tightened to **0.05 EV** (from 0.28 EV) and the convergence threshold to 0.02 EV, eliminating the visible +0.28 EV jumps seen in the previous hysteresis design. Sub-pixel `Double` accumulators prevent rounding stall for ISO and shutter.
+* **Continuous Dial Strip Tracking:** `DialStripView.setContinuousPosition(Float)` allows the dial to glide smoothly to fractional inter-tick positions during Auto Exposure and Auto White Balance, with logarithmic interpolation for shutter and ISO axes and linear interpolation for Kelvin. The dial only updates during auto while the user is not dragging (`isUserInteracting` guard).
 * **Storage Target Management:** `StorageTargetManager` discovers internal and USB-C OTG / external volumes via `StorageManager`, persists the selected target across sessions, and hot-swaps on `ACTION_MEDIA_MOUNTED/UNMOUNTED` broadcasts with emergency recording stop on mid-clip disconnection. `StorageBenchmark` runs a 32 MB fsync-validated sequential write test to rate storage as GOOD / WARN / CRITICAL relative to the selected bitrate, and `PixelLogEncoderPipeline` fires an `onStorageSlowWarning` callback when `writeSampleData` stalls exceed 80 ms.
 * **Scene Luminance Metering (Native):** `ZeroCopyImporter` performs a center-weighted 32×24 Gaussian grid photometric evaluation on Gr sensels per RAW frame (CFA-pattern-aware green sample selection for all four Bayer patterns), computing a temporally smoothed EV delta against a corrected target middle grey of $2^{-3.5} \approx 0.0884$ (ISO 12232 standard 3.5-stop highlight headroom). The `EvMeterView` renders a ±2 EV scale with 60/120 fps damped interpolation.
 * **Per-Sensor Hardware Profiling:** On each camera open, the HAL characteristics for all physical sensors are queried and cached into `SensorProfile` structs — including actual ISO range, exposure time range, focus distance, hyperfocal distance, and max analog sensitivity — clamping all user inputs to the physical hardware limits.
-* **JSON Sidecar Metadata:** Frame-accurate `.json` written alongside each clip containing lens, ISO, shutter, Kelvin/tint, rolling shutter skew, dynamic black/white levels, color matrices, and PixelLog curve parameters for reproducible post-production.
+* **JSON Sidecar Metadata:** Frame-accurate `.json` written alongside each clip containing lens, ISO, shutter, Kelvin/tint, rolling shutter skew, dynamic black/white levels, white level, sensor bit depth, iDCG active flag, color matrices, and PixelLog curve parameters for reproducible post-production.
 
 
 ---
@@ -62,13 +66,10 @@ PixelLog/
 │       ├── assets/
 │       │   ├── luts/
 │       │   │   ├── PixelLog_to_Rec709_Display.cube   # 33x33x33 preview LUT (SDR)
-│       │   │   ├── PixelLog_to_Rec2020_Linear.cube   # Scene-linear BT.2020
-│       │   │   ├── PixelLog_to_ACEScg.cube           # ACEScg gamut
 │       │   │   ├── PixelLog_to_AgX_Base.cube         # AgX Film (neutral)
 │       │   │   ├── PixelLog_to_AgX_Punchy.cube       # AgX Film (punchy)
 │       │   │   ├── PixelLog_to_AgX_HLG.cube          # AgX HLG HDR (BT.2020/HLG)
-│       │   │   ├── PixelLog_to_AgX_Punchy_HLG.cube   # AgX Punchy HLG HDR
-│       │   │   └── PixelLog_to_DWG_Intermediate.cube # DaVinci Wide Gamut
+│       │   │   └── PixelLog_to_AgX_Punchy_HLG.cube   # AgX Punchy HLG HDR
 │       │   └── shaders/
 │       │       ├── debayer_pixel_log.vert    # Fullscreen quad vertex shader
 │       │       ├── debayer_pixel_log.frag    # 3x3 directional debayer + Pixel-Log OETF
@@ -120,7 +121,8 @@ PixelLog/
 │   ├── PixelLog_to_AgX_Punchy_33/65.cube     # AgX Punchy (33 & 65 pt)
 │   ├── PixelLog_to_AgX_HLG_33/65.cube        # AgX HLG HDR (33 & 65 pt)
 │   ├── PixelLog_to_AgX_Punchy_HLG_33/65.cube # AgX Punchy HLG HDR (33 & 65 pt)
-│   └── PixelLog_to_DWG_Intermediate_33/65.cube # DaVinci Wide Gamut (33 & 65 pt)
+│   ├── PixelLog_to_DWG_Intermediate_33/65.cube # DaVinci Wide Gamut (33 & 65 pt)
+│   └── PixelLog_FalseColor_33.cube           # False colour monitoring (33 pt)
 ├── tests/
 │   ├── test_color_science.py                 # Python verification test harness
 │   └── test_native_math.cpp                  # C++ FP32 math precision test harness

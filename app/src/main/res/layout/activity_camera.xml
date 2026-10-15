@@ -671,10 +671,23 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:fontFamily="@font/gabarito"
+                        android:gravity="center"
+                        android:maxLines="1"
+                        android:ellipsize="end"
                         android:text="REC.709"
                         android:textColor="@color/white"
                         android:textSize="18sp"
                         android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/textSettingsLutSub"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/gabarito"
+                        android:gravity="center"
+                        android:text="BUILT-IN"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="11sp" />
                 </LinearLayout>
 
                 <!-- Import Custom .cube LUT -->

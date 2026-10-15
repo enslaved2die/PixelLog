@@ -1,5 +1,6 @@
 #version 310 es
 precision highp float;
+precision highp int;
 precision highp sampler2D;
 precision highp sampler3D;
 

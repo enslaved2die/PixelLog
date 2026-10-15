@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.StatFs
 import android.util.Log
+import android.view.HapticFeedbackConstants
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -36,6 +37,7 @@ import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -346,7 +348,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
             if (!headerSample.contains("LUT_3D_SIZE") && !headerSample.contains("LUT_1D_SIZE")) {
                 targetFile.delete()
-                Toast.makeText(this, "Invalid .cube file (missing LUT_3D_SIZE)", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Invalid .cube file", Toast.LENGTH_SHORT).show()
                 return@registerForActivityResult
             }
 
@@ -358,7 +360,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             Toast.makeText(this, "Imported LUT: $fileName", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to import LUT", e)
-            Toast.makeText(this, "Failed to import LUT: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Failed to import LUT", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -407,7 +409,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 val currentTargetStillValid = available.any { it.id == currentStorageTarget?.id }
                 if (isRecording && currentStorageTarget?.isPrimary == false && !currentTargetStillValid) {
                     Log.w(TAG, "Active recording storage disconnected! Emergency stop.")
-                    Toast.makeText(this@CameraActivity, "External storage disconnected! Stopping recording...", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@CameraActivity, "Storage disconnected: recording stopped", Toast.LENGTH_SHORT).show()
                     stopRecording()
                 }
                 currentStorageTarget = storageTargetManager.resolveTarget(prefs.storageTargetId)
@@ -437,6 +439,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var textSettingsTransfer: TextView
     private lateinit var textSettingsBakeLut: TextView
     private lateinit var textSettingsLut: TextView
+    private lateinit var textSettingsLutSub: TextView
     private lateinit var textSettingsImportLut: TextView
     private lateinit var textSettingsMic: TextView
     private lateinit var textSettingsSidecar: TextView
@@ -555,6 +558,58 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
         }
         return bestIdx
+    }
+
+    private fun findContinuousShutterIndex(shutterNs: Long): Float {
+        if (shutterSpeeds.isEmpty() || shutterNs <= 0L) return 0f
+        val tLive = shutterNs.toDouble() / 1_000_000_000.0
+        val tFirst = 1.0 / shutterSpeeds.first()
+        val tLast = 1.0 / shutterSpeeds.last()
+        if (tLive <= tFirst) return 0f
+        if (tLive >= tLast) return (shutterSpeeds.size - 1).toFloat()
+        for (i in 0 until shutterSpeeds.size - 1) {
+            val t0 = 1.0 / shutterSpeeds[i]
+            val t1 = 1.0 / shutterSpeeds[i + 1]
+            if (tLive in t0..t1) {
+                if (t1 == t0) return i.toFloat()
+                val frac = (kotlin.math.ln(tLive / t0) / kotlin.math.ln(t1 / t0)).toFloat()
+                return i + frac.coerceIn(0f, 1f)
+            }
+        }
+        val speed = if (shutterNs > 0) (1_000_000_000.0 / shutterNs).roundToInt() else 60
+        return findClosestShutterIndex(speed).toFloat()
+    }
+
+    private fun findContinuousIsoIndex(iso: Int): Float {
+        if (isoValues.isEmpty()) return 0f
+        if (iso <= isoValues.first()) return 0f
+        if (iso >= isoValues.last()) return (isoValues.size - 1).toFloat()
+        for (i in 0 until isoValues.size - 1) {
+            val v0 = isoValues[i]
+            val v1 = isoValues[i + 1]
+            if (iso in v0..v1) {
+                if (v1 == v0) return i.toFloat()
+                val frac = (kotlin.math.ln(iso.toDouble() / v0) / kotlin.math.ln(v1.toDouble() / v0)).toFloat()
+                return i + frac.coerceIn(0f, 1f)
+            }
+        }
+        return findClosestIsoIndex(iso).toFloat()
+    }
+
+    private fun findContinuousWbIndex(kelvin: Int): Float {
+        if (wbValues.isEmpty()) return 0f
+        if (kelvin <= wbValues.first()) return 0f
+        if (kelvin >= wbValues.last()) return (wbValues.size - 1).toFloat()
+        for (i in 0 until wbValues.size - 1) {
+            val k0 = wbValues[i]
+            val k1 = wbValues[i + 1]
+            if (kelvin in k0..k1) {
+                if (k1 == k0) return i.toFloat()
+                val frac = (kelvin - k0).toFloat() / (k1 - k0).toFloat()
+                return i + frac.coerceIn(0f, 1f)
+            }
+        }
+        return findClosestWbIndex(kelvin).toFloat()
     }
 
     private fun updateActiveIsoValues() {
@@ -768,6 +823,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         textSettingsTransfer = findViewById(R.id.textSettingsTransfer)
         textSettingsBakeLut = findViewById(R.id.textSettingsBakeLut)
         textSettingsLut = findViewById(R.id.textSettingsLut)
+        textSettingsLutSub = findViewById(R.id.textSettingsLutSub)
         textSettingsImportLut = findViewById(R.id.textSettingsImportLut)
         textSettingsMic = findViewById(R.id.textSettingsMic)
         textSettingsSidecar = findViewById(R.id.textSettingsSidecar)
@@ -857,21 +913,13 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         lutCatalog.add(LutItem("agx_punchy", "AGX PUNCH", assetPath = "luts/PixelLog_to_AgX_Punchy.cube",
             targetColorStandard = MediaFormat.COLOR_STANDARD_BT709,
             targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
-        lutCatalog.add(LutItem("dwg", "DWG", assetPath = "luts/PixelLog_to_DWG_Intermediate.cube",
-            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
-            targetColorTransfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO))
-        lutCatalog.add(LutItem("acescg", "ACEScg", assetPath = "luts/PixelLog_to_ACEScg.cube",
-            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
-            targetColorTransfer = MediaFormat.COLOR_TRANSFER_LINEAR))
-        lutCatalog.add(LutItem("linear", "LINEAR", assetPath = "luts/PixelLog_to_Rec2020_Linear.cube",
-            targetColorStandard = MediaFormat.COLOR_STANDARD_BT2020,
-            targetColorTransfer = MediaFormat.COLOR_TRANSFER_LINEAR))
 
         // Imported custom .cube files from app private directory
         val lutsDir = File(filesDir, "luts")
         if (lutsDir.exists()) {
             lutsDir.listFiles { f -> f.extension.equals("cube", ignoreCase = true) }?.sortedBy { it.name }?.forEach { f ->
-                val shortName = f.nameWithoutExtension.take(8).uppercase(Locale.US)
+                val cleanName = f.nameWithoutExtension.replace('_', ' ').replace('-', ' ').trim()
+                val shortName = cleanName.take(12).uppercase(Locale.US)
                 lutCatalog.add(LutItem("custom_${f.nameWithoutExtension}", shortName, file = f))
             }
         }
@@ -965,6 +1013,31 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         updateSettingsDisplay()
     }
 
+    private fun showDeleteLutDialog(item: LutItem) {
+        val file = item.file ?: return
+        AlertDialog.Builder(this)
+            .setTitle("Delete Imported LUT")
+            .setMessage("Delete \"${item.displayName}\" (${file.name})?")
+            .setPositiveButton("Delete") { _, _ ->
+                try {
+                    val deleted = file.delete()
+                    if (deleted) {
+                        Toast.makeText(this, "Deleted ${item.displayName}", Toast.LENGTH_SHORT).show()
+                        refreshLutCatalog()
+                        val fallbackIdx = lutCatalog.indexOfFirst { it.id == "rec709" }.takeIf { it >= 0 } ?: 0
+                        selectLut(fallbackIdx)
+                    } else {
+                        Toast.makeText(this, "Failed to delete ${file.name}", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error deleting LUT file", e)
+                    Toast.makeText(this, "Error deleting LUT: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun getFileName(uri: Uri): String? {
         var result: String? = null
         if (uri.scheme == "content") {
@@ -998,7 +1071,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun switchLens(lens: CameraController.LensZoom) {
         if (isRecording) {
-            Toast.makeText(this, "Cannot switch lens while recording", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Lens locked while recording", Toast.LENGTH_SHORT).show()
             return
         }
         cameraController.setLensZoom(lens)
@@ -1052,7 +1125,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun cycleStabilizationMode() {
         if (isRecording) {
-            Toast.makeText(this, "Cannot switch stabilization while recording", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Stabilization locked while recording", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -1075,7 +1148,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun switchStabilization(mode: CameraController.StabilizationMode) {
         if (isRecording) {
-            Toast.makeText(this, "Cannot switch stabilization while recording", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Stabilization locked while recording", Toast.LENGTH_SHORT).show()
             return
         }
         val safeMode = if (mode == CameraController.StabilizationMode.EIS || mode == CameraController.StabilizationMode.FULL) {
@@ -1088,12 +1161,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         updateStabilizationSwitchesUi()
         updateSettingsDisplay()
         val desc = when (safeMode) {
-            CameraController.StabilizationMode.OIS -> "OIS Active (Zero Crop)"
-            CameraController.StabilizationMode.GYRO -> "GYRO Log Active (Gyroflow Post-Stab, OIS OFF)"
-            CameraController.StabilizationMode.OFF -> "Stabilization OFF (Zero Crop)"
+            CameraController.StabilizationMode.OIS -> "OIS (Zero Crop)"
+            CameraController.StabilizationMode.GYRO -> "Gyro (Gyroflow)"
+            CameraController.StabilizationMode.OFF -> "Off"
             else -> safeMode.label
         }
-        Toast.makeText(this, "Stabilization: ${safeMode.label} • $desc", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Stabilization: $desc", Toast.LENGTH_SHORT).show()
     }
 
     private fun updateStabilizationSwitchesUi() {
@@ -1145,7 +1218,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         try {
             val target = currentStorageTarget ?: storageTargetManager.getInternalTarget()
             if (target.availableBytes < 100L * 1024L * 1024L) {
-                Toast.makeText(this, "Storage full: less than 100MB available", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Storage full (< 100MB)", Toast.LENGTH_SHORT).show()
                 return
             }
             val pixDir = target.recordingDirectory
@@ -1218,11 +1291,10 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             btnRecord.setBackgroundResource(R.drawable.bg_record_button_stop)
             mainHandler.post(timecodeRunnable)
 
-            val gyroTag = if (cameraController.stabilizationMode == CameraController.StabilizationMode.GYRO) " [GYRO LOG]" else ""
-            Toast.makeText(this, "Recording started (${encWidth}x${encHeight} ${codecTag} ${transferTag} ${bakeTag})$gyroTag", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e(TAG, "Recording failed", e)
-            Toast.makeText(this, "Recording failed: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Recording failed", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1269,16 +1341,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             MediaScannerConnection.scanFile(this, filesToScan.toTypedArray(), mimeTypes) { path, uri ->
                 Log.i(TAG, "MediaScanner registered: $path -> $uri")
             }
-            val toastMsg = buildString {
-                append("Saved: ${recordedFile.name}")
-                val tags = mutableListOf<String>()
-                if (gcsvFile != null) tags.add("+gcsv")
-                if (sidecarFile != null) tags.add("+json")
-                if (tags.isNotEmpty()) {
-                    append(" (${tags.joinToString(", ")})")
-                }
-            }
-            Toast.makeText(this, toastMsg, Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Recording saved", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1334,11 +1397,26 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             updateSettingsDisplay()
         }
 
-        // Row 2: LUT selection (Cycles through built-in, custom imported, and CLEAN bypass)
-        findViewById<View>(R.id.settingsLutGroup).setOnClickListener {
+        // Row 2: LUT selection (Click cycles through LUTs, Hold deletes imported custom LUT)
+        val lutGroup = findViewById<View>(R.id.settingsLutGroup)
+        lutGroup.setOnClickListener {
             if (lutCatalog.isNotEmpty()) {
                 val nextIdx = (currentLutIndex + 1) % lutCatalog.size
                 selectLut(nextIdx)
+            }
+        }
+        lutGroup.setOnLongClickListener { v ->
+            val rawItem = lutCatalog.getOrNull(currentLutIndex)
+            if (rawItem?.file != null && rawItem.file.exists()) {
+                v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                showDeleteLutDialog(rawItem)
+                true
+            } else if (rawItem != null && rawItem.id != "clean") {
+                v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                Toast.makeText(this, "${rawItem.displayName} is a built-in LUT and cannot be deleted", Toast.LENGTH_SHORT).show()
+                true
+            } else {
+                false
             }
         }
 
@@ -1412,6 +1490,17 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val activeLutName = effectiveLutItem?.displayName ?: if (isLutActive) "REC.709" else "CLEAN"
         textSettingsLut.text = activeLutName
 
+        if (rawLutItem?.file != null && rawLutItem.file.exists()) {
+            textSettingsLutSub.text = "IMPORTED"
+            textSettingsLutSub.setTextColor(ContextCompat.getColor(this, R.color.audio_meter_green))
+        } else if (rawLutItem?.id == "clean" || !isLutActive) {
+            textSettingsLutSub.text = "BYPASS"
+            textSettingsLutSub.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        } else {
+            textSettingsLutSub.text = "BUILT-IN"
+            textSettingsLutSub.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        }
+
         // Signal transfer tag
         textSettingsTransfer.text = currentColorTransfer.label
         textSettingsTransfer.setTextColor(
@@ -1465,7 +1554,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun cycleStorageTarget() {
         if (isRecording) {
-            Toast.makeText(this, "Cannot switch storage while recording", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Storage locked while recording", Toast.LENGTH_SHORT).show()
             return
         }
         val targets = storageTargetManager.getAvailableTargets()
@@ -1500,11 +1589,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         }
                         StorageBenchmark.SpeedStatus.WARN -> {
                             textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.audio_meter_orange))
-                            Toast.makeText(this, "Storage Warning: ${result.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Storage marginal (${result.writeSpeedMBps.toInt()} MB/s)", Toast.LENGTH_SHORT).show()
                         }
                         StorageBenchmark.SpeedStatus.CRITICAL -> {
                             textSettingsStorageSpeed.setTextColor(ContextCompat.getColor(this, R.color.rec_red))
-                            Toast.makeText(this, "⚠️ SLOW STORAGE: ${result.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, "⚠️ Storage too slow (${result.writeSpeedMBps.toInt()} MB/s)", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -1523,9 +1612,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         tabIso.setOnClickListener { setActiveTab(ParamTab.ISO) }
         tabIso.setOnLongClickListener {
             val msg = if (cameraController.currentLensHasDcg) {
-                "Main Sensor (1x): Hardware Dual Conversion Gain (DCG) supported"
+                "1x: Hardware DCG supported"
             } else {
-                "${cameraController.currentLens.label} Sensor: Single Conversion Gain (SCG, DCG not supported)"
+                "${cameraController.currentLens.label}: SCG only (no DCG)"
             }
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
             true
@@ -1589,12 +1678,13 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         dialStrip.setValue(currentShutterIndex)
         dialStrip.dcgThresholdIndex = -1
         badgeDcg.setOnClickListener {
+            val bitDepthStr = "${cameraController.sensorBitDepth}-bit"
             val msg = if (cameraController.currentLensHasDcg) {
                 val iso = isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
-                val mode = if (iso >= 400) "HCG (High Conversion Gain, ISO 400+)" else "LCG (Low Conversion Gain, ISO 50-399)"
-                "Main Sensor (1x): Hardware DCG active — $mode"
+                val mode = if (iso >= 400) "HCG (ISO 400+)" else "LCG (ISO <400)"
+                "DCG active: $mode • $bitDepthStr"
             } else {
-                "${cameraController.currentLens.label} Sensor: Single Conversion Gain (SCG, hardware DCG not present)"
+                "${cameraController.currentLens.label}: SCG • $bitDepthStr"
             }
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
@@ -1679,12 +1769,20 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
         when (activeParamTab) {
             ParamTab.SHUTTER -> {
                 dialStrip.setRange(0, shutterSpeeds.size - 1, shutterSpeeds.size - 1)
-                dialStrip.setValue(currentShutterIndex)
+                if (cameraController.isShutterAuto && cameraController.lastExposureNs > 0) {
+                    dialStrip.setContinuousPosition(findContinuousShutterIndex(cameraController.lastExposureNs))
+                } else {
+                    dialStrip.setValue(currentShutterIndex)
+                }
                 dialStrip.dcgThresholdIndex = -1
             }
             ParamTab.ISO -> {
                 dialStrip.setRange(0, isoValues.size - 1, isoValues.size - 1)
-                dialStrip.setValue(currentIsoIndex)
+                if (cameraController.isIsoAuto && cameraController.lastIso > 0) {
+                    dialStrip.setContinuousPosition(findContinuousIsoIndex(cameraController.lastIso))
+                } else {
+                    dialStrip.setValue(currentIsoIndex)
+                }
                 dialStrip.dcgThresholdIndex = if (cameraController.currentLensHasDcg) isoValues.indexOf(400) else -1
             }
             ParamTab.EV -> {
@@ -1694,7 +1792,11 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             ParamTab.WB -> {
                 dialStrip.setRange(0, wbValues.size - 1, wbValues.size - 1)
-                dialStrip.setValue(currentWbIndex)
+                if (cameraController.isWbAuto && cameraController.lastKelvin > 0) {
+                    dialStrip.setContinuousPosition(findContinuousWbIndex(cameraController.lastKelvin))
+                } else {
+                    dialStrip.setValue(currentWbIndex)
+                }
                 dialStrip.dcgThresholdIndex = -1
             }
         }
@@ -1704,11 +1806,20 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun updateDialValueLabel() {
         when (activeParamTab) {
             ParamTab.SHUTTER -> {
-                textDialValue.text = formatShutterSpeed(shutterSpeeds[currentShutterIndex.coerceIn(0, shutterSpeeds.size - 1)])
+                val speed = if (cameraController.isShutterAuto && cameraController.lastExposureNs > 0) {
+                    (1_000_000_000.0 / cameraController.lastExposureNs).roundToInt()
+                } else {
+                    shutterSpeeds[currentShutterIndex.coerceIn(0, shutterSpeeds.size - 1)]
+                }
+                textDialValue.text = formatShutterSpeed(speed)
                 badgeDcg.visibility = View.GONE
             }
             ParamTab.ISO -> {
-                val iso = isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
+                val iso = if (cameraController.isIsoAuto && cameraController.lastIso > 0) {
+                    cameraController.lastIso
+                } else {
+                    isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
+                }
                 textDialValue.text = "ISO $iso"
                 badgeDcg.visibility = View.VISIBLE
                 updateDcgBadge(iso)
@@ -1720,7 +1831,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 badgeDcg.visibility = View.GONE
             }
             ParamTab.WB -> {
-                textDialValue.text = "${wbValues[currentWbIndex.coerceIn(0, wbValues.size - 1)]}K"
+                val kelvin = if (cameraController.isWbAuto && cameraController.lastKelvin > 0) {
+                    cameraController.lastKelvin
+                } else {
+                    wbValues[currentWbIndex.coerceIn(0, wbValues.size - 1)]
+                }
+                textDialValue.text = "${kelvin}K"
                 badgeDcg.visibility = View.GONE
             }
         }
@@ -1857,8 +1973,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 ParamTab.ISO -> {
                     if (cameraController.isIsoAuto) {
                         // Switch to manual: seed target ISO from live ISO
-                        val iso = isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
+                        val liveIso = if (cameraController.lastIso > 0) cameraController.lastIso else isoValues[currentIsoIndex.coerceIn(0, isoValues.size - 1)]
+                        val closestIdx = findClosestIsoIndex(liveIso)
+                        currentIsoIndex = closestIdx
+                        val iso = isoValues[currentIsoIndex]
                         cameraController.setIso(iso, isAuto = false)
+                        dialStrip.setValue(currentIsoIndex)
                     } else {
                         cameraController.isIsoAuto = true
                         cameraController.applySettings()
@@ -1867,8 +1987,12 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 ParamTab.WB -> {
                     if (cameraController.isWbAuto) {
                         // Switch to manual: seed target Kelvin from live estimated Kelvin
-                        val kelvin = wbValues[currentWbIndex.coerceIn(0, wbValues.size - 1)]
+                        val liveKelvin = if (cameraController.lastKelvin > 0) cameraController.lastKelvin else wbValues[currentWbIndex.coerceIn(0, wbValues.size - 1)]
+                        val closestIdx = findClosestWbIndex(liveKelvin)
+                        currentWbIndex = closestIdx
+                        val kelvin = wbValues[currentWbIndex]
                         cameraController.setWhiteBalance(kelvin, isAuto = false)
+                        dialStrip.setValue(currentWbIndex)
                     } else {
                         cameraController.isWbAuto = true
                         cameraController.applySettings()
@@ -1892,36 +2016,36 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun setupLiveTelemetry() {
         cameraController.onLiveTelemetry = { iso, shutterNs, focusDiopter, kelvin, ev ->
             runOnUiThread {
-                // 1. Live Shutter tracking
+                // 1. Live Shutter tracking (smooth continuous position and exact live in-between value)
                 if (cameraController.isShutterAuto) {
                     val speed = if (shutterNs > 0) (1_000_000_000.0 / shutterNs).roundToInt() else 60
-                    val closestIdx = findClosestShutterIndex(speed)
-                    currentShutterIndex = closestIdx
-                    if (activeParamTab == ParamTab.SHUTTER) {
+                    val fracIdx = findContinuousShutterIndex(shutterNs)
+                    currentShutterIndex = fracIdx.roundToInt().coerceIn(0, shutterSpeeds.size - 1)
+                    if (activeParamTab == ParamTab.SHUTTER && !dialStrip.isUserInteracting) {
                         textDialValue.text = formatShutterSpeed(speed)
-                        dialStrip.setCurrentIndex(closestIdx)
+                        dialStrip.setContinuousPosition(fracIdx)
                     }
                 }
 
-                // 2. Live ISO tracking
+                // 2. Live ISO tracking (smooth continuous position and exact live in-between value)
                 if (cameraController.isIsoAuto) {
-                    val closestIdx = findClosestIsoIndex(iso)
-                    currentIsoIndex = closestIdx
-                    if (activeParamTab == ParamTab.ISO) {
+                    val fracIdx = findContinuousIsoIndex(iso)
+                    currentIsoIndex = fracIdx.roundToInt().coerceIn(0, isoValues.size - 1)
+                    if (activeParamTab == ParamTab.ISO && !dialStrip.isUserInteracting) {
                         textDialValue.text = "ISO $iso"
-                        dialStrip.setCurrentIndex(closestIdx)
+                        dialStrip.setContinuousPosition(fracIdx)
                         badgeDcg.visibility = View.VISIBLE
                         updateDcgBadge(iso)
                     }
                 }
 
-                // 3. Live WB tracking
+                // 3. Live WB tracking (smooth continuous position and exact live in-between Kelvin)
                 if (cameraController.isWbAuto) {
-                    val closestIdx = findClosestWbIndex(kelvin)
-                    currentWbIndex = closestIdx
-                    if (activeParamTab == ParamTab.WB) {
+                    val fracIdx = findContinuousWbIndex(kelvin)
+                    currentWbIndex = fracIdx.roundToInt().coerceIn(0, wbValues.size - 1)
+                    if (activeParamTab == ParamTab.WB && !dialStrip.isUserInteracting) {
                         textDialValue.text = "${kelvin}K"
-                        dialStrip.setCurrentIndex(closestIdx)
+                        dialStrip.setContinuousPosition(fracIdx)
                     }
                 }
 
@@ -2116,7 +2240,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     PowerManager.THERMAL_STATUS_MODERATE -> {
                         Log.w(TAG, "Thermal status: MODERATE")
                         runOnUiThread {
-                            Toast.makeText(this, "Device warm (MODERATE thermal)", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this, "Thermal: Device warm", Toast.LENGTH_SHORT).show()
                         }
                     }
                     PowerManager.THERMAL_STATUS_SEVERE,
@@ -2125,7 +2249,7 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     PowerManager.THERMAL_STATUS_SHUTDOWN -> {
                         Log.e(TAG, "Thermal status: THROTTLING ($status)")
                         runOnUiThread {
-                            Toast.makeText(this, "THERMAL THROTTLING: Device is hot!", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this, "Thermal throttling active", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -2207,6 +2331,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 put("is_crop", cameraController.currentLens.isCrop || cameraController.stabilizationMode.isCrop)
                 put("crop_factor", if (cameraController.stabilizationMode.isCrop) 1.18 else cameraController.currentLens.cropFactor.toDouble())
                 put("cfa_pattern", if (cameraController.bayerPattern == 0) "RGGB" else "CFA_${cameraController.bayerPattern}")
+                put("sensor_bit_depth", cameraController.sensorBitDepth)
+                put("white_level", cameraController.lastWhiteLevel.toDouble())
+                put("is_12bit_idcg_active", cameraController.is12BitiDcgActive)
                 put("iso", cameraController.lastIso)
                 put("shutter_ns", cameraController.lastExposureNs)
                 val shutterAngle = ((cameraController.lastExposureNs.toDouble() / cameraController.currentFramerate.frameDurationNs.toDouble()) * 360.0).roundToInt()
@@ -2227,6 +2354,9 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 put("highlight_recovery_enabled", isHighlightRecoveryEnabled)
             }
             root.put("camera", camObj)
+            root.put("sensor_bit_depth", cameraController.sensorBitDepth)
+            root.put("white_level", cameraController.lastWhiteLevel.toDouble())
+            root.put("is_12bit_idcg_active", cameraController.is12BitiDcgActive)
             root.put("edr_enabled", isEdrEnabled)
             root.put("shadow_recovery_mode", currentShadowRecoveryMode.label)
             root.put("shadow_recovery_enabled", currentShadowRecoveryMode != ShadowRecoveryMode.OFF)
@@ -2249,6 +2379,8 @@ class CameraActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
                 put("dynamic_black_level", JSONArray(cameraController.lastDynamicBlackLevel.map { it.toDouble() }))
                 put("white_level", cameraController.lastWhiteLevel.toDouble())
+                put("sensor_bit_depth", cameraController.sensorBitDepth)
+                put("is_12bit_idcg_active", cameraController.is12BitiDcgActive)
                 put("neutral_color_point", JSONArray(cameraController.lastNeutralColorPoint.map { it.toDouble() }))
 
                 val calib = cameraController.currentCalibration

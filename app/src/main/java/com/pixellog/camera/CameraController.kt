@@ -24,6 +24,7 @@ import com.pixellog.nativebridge.PixelLogEngine
 import java.util.concurrent.Executor
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 /**
  * CameraController coordinates the Camera2 HAL state machine for the Pixel 11 Pro:
@@ -191,7 +192,10 @@ class CameraController(
         val exposureTimeRangeNs: Range<Long>,
         val maxAnalogSensitivity: Int,
         val hasDcg: Boolean,
-        val dcgThresholdIso: Int = 400
+        val dcgThresholdIso: Int = 400,
+        val is12BitiDcgActive: Boolean = false,
+        val sensorBitDepth: Int = 10,
+        val whiteLevel: Float = 1023.0f
     )
 
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -224,7 +228,10 @@ class CameraController(
             isoRange = isoRange,
             exposureTimeRangeNs = expRange,
             maxAnalogSensitivity = maxAnalog,
-            hasDcg = currentLensHasDcg
+            hasDcg = currentLensHasDcg,
+            is12BitiDcgActive = is12BitiDcgActive,
+            sensorBitDepth = sensorBitDepth,
+            whiteLevel = lastWhiteLevel
         )
     }
 
@@ -232,12 +239,26 @@ class CameraController(
     private var cameraHandler: Handler? = null
     private var cameraExecutor: Executor? = null
 
+    // Semi-Auto Closed-Loop Continuous State Variables
+    private var autoComputedIso: Int = 100
+    private var autoComputedIsoFloat: Double = 100.0
+    private var autoComputedShutterNs: Long = SHUTTER_180_NS
+    private var autoComputedShutterFloatNs: Double = SHUTTER_180_NS.toDouble()
+
     // State Variables
     var isShutterAuto: Boolean = true
         set(value) {
             if (field != value) {
                 Log.i(TAG, "isShutterAuto changed: $field -> $value")
                 field = value
+                if (!value && isIsoAuto) {
+                    val profile = getActiveSensorProfile()
+                    val seedIso = (lastIso.takeIf { it > 0 } ?: targetIso).coerceIn(profile.isoRange.lower, profile.isoRange.upper)
+                    autoComputedIso = seedIso
+                    autoComputedIsoFloat = seedIso.toDouble()
+                    lastAutoConvergenceFrame = lastProcessedFrameNumber
+                    isClosedLoopSettled = false
+                }
             }
         }
     var isIsoAuto: Boolean = true
@@ -245,6 +266,16 @@ class CameraController(
             if (field != value) {
                 Log.i(TAG, "isIsoAuto changed: $field -> $value")
                 field = value
+                if (!value && isShutterAuto) {
+                    val profile = getActiveSensorProfile()
+                    val maxAllowedShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L)
+                    val seedShutter = (lastExposureNs.takeIf { it > 0 } ?: currentFramerate.shutter180Ns)
+                        .coerceIn(profile.exposureTimeRangeNs.lower, maxAllowedShutter)
+                    autoComputedShutterNs = seedShutter
+                    autoComputedShutterFloatNs = seedShutter.toDouble()
+                    lastAutoConvergenceFrame = lastProcessedFrameNumber
+                    isClosedLoopSettled = false
+                }
             }
         }
     var isWbAuto: Boolean = true
@@ -307,8 +338,6 @@ class CameraController(
             applyStateAndRepeat()
         }
 
-    private var autoComputedIso: Int = 100
-    private var autoComputedShutterNs: Long = SHUTTER_180_NS
 
     // Metering Regions & AE/AF Lock States
     var afMeteringRegion: MeteringRectangle? = null
@@ -381,10 +410,16 @@ class CameraController(
     var bayerPattern: Int = 0 // 0: RGGB
 
     // Latest Frame Metadata for Sidecar JSON export
-    var lastDynamicBlackLevel: FloatArray = floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f)
+    var lastDynamicBlackLevel: FloatArray = floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f)
         private set
-    var lastWhiteLevel: Float = 4095.0f
+    var lastWhiteLevel: Float = 1023.0f
         private set
+
+    val is12BitiDcgActive: Boolean
+        get() = (lastWhiteLevel >= 4095.0f)
+
+    val sensorBitDepth: Int
+        get() = if (lastWhiteLevel >= 4095.0f) 12 else 10
     var lastNeutralColorPoint: FloatArray = floatArrayOf(0.55f, 1.0f, 0.70f)
         private set
     var lastCompositeMatrix: FloatArray = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
@@ -534,6 +569,45 @@ class CameraController(
         }
     }
 
+    /**
+     * Selects the active RAW_SENSOR stream dimensions (width, height):
+     * By default, picks the largest 4:3 binned RAW_SENSOR stream where width <= 4200
+     * (which selects 4080 x 3064 on Main and 4000 x 3000 on UW/Tele),
+     * falling back to the largest available size only if no <= 4200 stream exists.
+     */
+    fun selectRawStreamDimensions(sizes: List<Pair<Int, Int>>?): Pair<Int, Int>? {
+        if (sizes.isNullOrEmpty()) return null
+
+        val fourByThreeSizes = sizes.filter { (w, h) ->
+            if (w <= 0 || h <= 0) false
+            else {
+                val ratio = w.toFloat() / h.toFloat()
+                Math.abs(ratio - (4.0f / 3.0f)) < 0.05f
+            }
+        }
+
+        // 1. Largest 4:3 stream where width <= 4200
+        val binned4x3 = fourByThreeSizes.filter { (w, _) -> w <= 4200 }.maxByOrNull { (w, h) -> w * h }
+        if (binned4x3 != null) return binned4x3
+
+        // 2. Largest 4:3 stream overall
+        val largest4x3 = fourByThreeSizes.maxByOrNull { (w, h) -> w * h }
+        if (largest4x3 != null) return largest4x3
+
+        // 3. Fall back to largest available stream overall
+        return sizes.maxByOrNull { (w, h) -> w * h } ?: sizes.first()
+    }
+
+    /**
+     * Selects the active RAW_SENSOR stream size from Android Camera2 StreamConfigurationMap output sizes.
+     */
+    fun selectRawSensorStreamSize(rawSizes: Array<Size>?): Size? {
+        if (rawSizes.isNullOrEmpty()) return null
+        val list = rawSizes.map { it.width to it.height }
+        val chosen = selectRawStreamDimensions(list) ?: return null
+        return rawSizes.find { it.width == chosen.first && it.height == chosen.second } ?: rawSizes.first()
+    }
+
     private fun extractCalibration(id: String, chars: CameraCharacteristics): CameraCalibration {
         val defaultCalib = ColorScienceUtils.getDefaultCalibration(id)
         val fm1 = ColorScienceUtils.colorSpaceTransformToFloatArray(chars.get(CameraCharacteristics.SENSOR_FORWARD_MATRIX1))
@@ -546,16 +620,17 @@ class CameraController(
             ?: defaultCalib.calibrationTransform2
         val ill1 = chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1)?.toInt() ?: defaultCalib.illuminant1
         val ill2 = chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt() ?: defaultCalib.illuminant2
-        val wl = chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.toFloat() ?: defaultCalib.whiteLevel
+        val wl = chars.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)?.toFloat()
+            ?: defaultCalib.whiteLevel
         val cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ?: defaultCalib.bayerPattern
 
         val blPattern = chars.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
         val dynBlack = if (blPattern != null) {
             floatArrayOf(
-                blPattern.getOffsetForIndex(0, 0).toFloat(), // top-left (0,0)
-                blPattern.getOffsetForIndex(1, 0).toFloat(), // top-right (1,0)
-                blPattern.getOffsetForIndex(0, 1).toFloat(), // bottom-left (0,1)
-                blPattern.getOffsetForIndex(1, 1).toFloat()  // bottom-right (1,1)
+                blPattern.getOffsetForIndex(0, 0).toFloat(), // top-left (0,0) -> (y&1)*2 + (x&1) = 0
+                blPattern.getOffsetForIndex(1, 0).toFloat(), // top-right (1,0) -> (y&1)*2 + (x&1) = 1
+                blPattern.getOffsetForIndex(0, 1).toFloat(), // bottom-left (0,1) -> (y&1)*2 + (x&1) = 2
+                blPattern.getOffsetForIndex(1, 1).toFloat()  // bottom-right (1,1) -> (y&1)*2 + (x&1) = 3
             )
         } else {
             defaultCalib.dynamicBlackLevel
@@ -606,6 +681,10 @@ class CameraController(
         }
         cameraCharacteristics = chars
         currentCalibration = calibrationCache[targetPhysId] ?: extractCalibration(targetPhysId, chars)
+        currentCalibration?.let { calib ->
+            lastWhiteLevel = calib.whiteLevel
+            lastDynamicBlackLevel = calib.dynamicBlackLevel.copyOf()
+        }
 
         // Bayer filter arrangement
         val cfa = chars.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ?: 0
@@ -614,15 +693,8 @@ class CameraController(
         // Discover supported RAW_SENSOR output sizes from HAL
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val rawSizes = map?.getOutputSizes(ImageFormat.RAW_SENSOR)
-        if (!rawSizes.isNullOrEmpty()) {
-            val matchedSize = rawSizes.find { it.width == preferredWidth && it.height == preferredHeight }
-                ?: rawSizes.filter { s ->
-                    val ratio = s.width.toFloat() / s.height.toFloat()
-                    Math.abs(ratio - (4.0f / 3.0f)) < 0.05f
-                }.maxByOrNull { it.width * it.height }
-                ?: rawSizes.maxByOrNull { it.width * it.height }
-                ?: rawSizes.first()
-
+        val matchedSize = selectRawSensorStreamSize(rawSizes)
+        if (matchedSize != null) {
             fullSensorWidth = matchedSize.width
             fullSensorHeight = matchedSize.height
             val streamW: Int
@@ -719,10 +791,7 @@ class CameraController(
             // Inspect target sensor's native open-gate RAW resolution
             val map = chars?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val rawSizes = map?.getOutputSizes(ImageFormat.RAW_SENSOR)
-            val matchedSize = rawSizes?.filter { s ->
-                val ratio = s.width.toFloat() / s.height.toFloat()
-                Math.abs(ratio - (4.0f / 3.0f)) < 0.05f
-            }?.maxByOrNull { it.width * it.height } ?: rawSizes?.firstOrNull()
+            val matchedSize = selectRawSensorStreamSize(rawSizes)
 
             val newW = matchedSize?.width ?: fullSensorWidth
             val newH = matchedSize?.height ?: fullSensorHeight
@@ -836,7 +905,9 @@ class CameraController(
         targetShutterNs = newTarget
         isShutterAuto = isAuto
         if (!isAuto && isIsoAuto) {
-            autoComputedIso = (lastIso.takeIf { it > 0 } ?: targetIso).coerceIn(profile.isoRange.lower, profile.isoRange.upper)
+            val seedIso = (lastIso.takeIf { it > 0 } ?: targetIso).coerceIn(profile.isoRange.lower, profile.isoRange.upper)
+            autoComputedIso = seedIso
+            autoComputedIsoFloat = seedIso.toDouble()
             lastAutoConvergenceFrame = lastProcessedFrameNumber
             isClosedLoopSettled = false
         }
@@ -851,8 +922,10 @@ class CameraController(
         isIsoAuto = isAuto
         if (!isAuto && isShutterAuto) {
             val maxAllowedShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L)
-            autoComputedShutterNs = (lastExposureNs.takeIf { it > 0 } ?: currentFramerate.shutter180Ns)
+            val seedShutter = (lastExposureNs.takeIf { it > 0 } ?: currentFramerate.shutter180Ns)
                 .coerceIn(profile.exposureTimeRangeNs.lower, maxAllowedShutter)
+            autoComputedShutterNs = seedShutter
+            autoComputedShutterFloatNs = seedShutter.toDouble()
             lastAutoConvergenceFrame = lastProcessedFrameNumber
             isClosedLoopSettled = false
         }
@@ -1322,8 +1395,12 @@ class CameraController(
                 lastRollingShutterSkewNs = skewNs
             }
 
-            val iso = physResult.get(CaptureResult.SENSOR_SENSITIVITY) ?: targetIso
-            val exposureNs = physResult.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: targetShutterNs
+            val iso = physResult.get(CaptureResult.SENSOR_SENSITIVITY)
+                ?: result.get(CaptureResult.SENSOR_SENSITIVITY)
+                ?: (if (lastIso > 0) lastIso else targetIso)
+            val exposureNs = physResult.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                ?: result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                ?: (if (lastExposureNs > 0) lastExposureNs else targetShutterNs)
             val focusDiopter = physResult.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: targetFocusDiopter
             val evComp = physResult.get(CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION) ?: targetEvCompensation
             val evStep = cameraCharacteristics?.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
@@ -1426,11 +1503,15 @@ class CameraController(
                 // In semi-auto Shutter Priority, update auto baseline without compounding
                 if (supportsAePriority(AE_PRIORITY_SHUTTER)) {
                     lastAutoIso = iso
+                } else {
+                    lastAutoIso = autoComputedIso
                 }
             } else if (isShutterAuto) {
                 // In semi-auto ISO Priority, update auto baseline without compounding
                 if (supportsAePriority(AE_PRIORITY_ISO)) {
                     lastAutoExposureNs = exposureNs
+                } else {
+                    lastAutoExposureNs = autoComputedShutterNs
                 }
             }
             lastExposureNs = exposureNs
@@ -1451,70 +1532,76 @@ class CameraController(
 
             onLiveTelemetry?.invoke(iso, exposureNs, focusDiopter, effectiveKelvin, sceneEv)
 
-            // Closed-loop semi-auto convergence for Shutter Priority / ISO Priority (rate-limited to 8-frame pipeline & filter depth)
+            // Closed-loop semi-auto convergence for Shutter Priority / ISO Priority (smooth, damped 2-frame cadence)
             val targetEv = targetEvCompensation * (evStep?.toFloat() ?: 0.5f)
             val evError = targetEv - sceneEv
-
-            // Dual-threshold hysteresis deadband:
-            // When settled, ignore noise/jitter under 0.28 EV.
-            // When actively converging, continue until error is within 0.12 EV.
             val errorMagnitude = Math.abs(evError)
+
+            // Tight deadband (0.05 EV) to ignore sensor noise jitter while eliminating sudden 0.28 EV jumps
             if (isClosedLoopSettled) {
-                if (errorMagnitude > 0.28f) {
+                if (errorMagnitude > 0.05f) {
                     isClosedLoopSettled = false
                 }
             } else {
-                if (errorMagnitude <= 0.12f) {
+                if (errorMagnitude <= 0.02f) {
                     isClosedLoopSettled = true
                 }
             }
 
-            if (!isClosedLoopSettled && frameNumber - lastAutoConvergenceFrame >= 8) {
+            if (!isClosedLoopSettled && frameNumber - lastAutoConvergenceFrame >= 2) {
+                // Smooth proportional convergence step clamped to avoid abrupt visual jumps
+                val stepEv = (evError * 0.35f).coerceIn(-0.12f, 0.12f)
+                val correctionFactor = Math.pow(2.0, stepEv.toDouble())
+
                 if (!isShutterAuto && isIsoAuto && !supportsAePriority(AE_PRIORITY_SHUTTER)) {
-                    val correctionFactor = Math.pow(2.0, (evError * 0.18f).toDouble())
                     val profile = getActiveSensorProfile()
-                    val minIso = profile.isoRange.lower
-                    val maxIso = profile.isoRange.upper
-                    val nextIso = (autoComputedIso * correctionFactor).roundToInt().coerceIn(minIso, maxIso)
-                    if (Math.abs(nextIso - autoComputedIso) >= 5) {
+                    val minIso = profile.isoRange.lower.toDouble()
+                    val maxIso = profile.isoRange.upper.toDouble()
+                    val nextIsoFloat = (autoComputedIsoFloat * correctionFactor).coerceIn(minIso, maxIso)
+                    val nextIso = nextIsoFloat.roundToInt()
+
+                    if (nextIso != autoComputedIso) {
+                        autoComputedIsoFloat = nextIsoFloat
                         autoComputedIso = nextIso
                         lastAutoConvergenceFrame = frameNumber
                         applyStateAndRepeat()
-                    } else {
+                    } else if (errorMagnitude <= 0.05f) {
                         isClosedLoopSettled = true
                     }
                 } else if (isShutterAuto && !isIsoAuto && !supportsAePriority(AE_PRIORITY_ISO)) {
-                    val correctionFactor = Math.pow(2.0, (evError * 0.18f).toDouble())
                     val profile = getActiveSensorProfile()
-                    val minShutter = profile.exposureTimeRangeNs.lower
-                    val maxShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L)
-                    val nextShutter = (autoComputedShutterNs * correctionFactor).toLong().coerceIn(minShutter, maxShutter)
-                    val minChange = (autoComputedShutterNs * 0.05).toLong().coerceIn(20_000L, 500_000L)
-                    if (Math.abs(nextShutter - autoComputedShutterNs) >= minChange) {
+                    val minShutter = profile.exposureTimeRangeNs.lower.toDouble()
+                    val maxShutter = profile.exposureTimeRangeNs.upper.coerceAtMost(1_000_000_000L).toDouble()
+                    val nextShutterFloat = (autoComputedShutterFloatNs * correctionFactor).coerceIn(minShutter, maxShutter)
+                    val nextShutter = nextShutterFloat.roundToLong()
+
+                    if (nextShutter != autoComputedShutterNs) {
+                        autoComputedShutterFloatNs = nextShutterFloat
                         autoComputedShutterNs = nextShutter
                         lastAutoConvergenceFrame = frameNumber
                         applyStateAndRepeat()
-                    } else {
+                    } else if (errorMagnitude <= 0.05f) {
                         isClosedLoopSettled = true
                     }
                 }
             }
 
             // 2. Dynamic Black Level with range sanitization & temporal EMA smoothing
-            val whiteLevel = currentCalibration?.whiteLevel ?: 4095.0f
+            val whiteLevel = currentCalibration?.whiteLevel ?: 1023.0f
+            val staticBlack = currentCalibration?.dynamicBlackLevel ?: floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f)
 
             val rawDynBlack = physResult.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
                 ?: result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)
 
             val dynBlack = if (rawDynBlack != null && rawDynBlack.size == 4) {
-                // Reject leaked Camera 0 12-bit black level (> 128.0) when current sensor is 10-bit (whiteLevel <= 1023.0)
-                if (whiteLevel <= 1023.0f && rawDynBlack[0] > 128.0f) {
-                    currentCalibration?.dynamicBlackLevel ?: floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f)
+                // Reject invalid or leaked black levels (e.g. negative or exceeding sensor's white level)
+                if (rawDynBlack.any { it >= whiteLevel || it < 0f }) {
+                    staticBlack
                 } else {
                     floatArrayOf(rawDynBlack[0], rawDynBlack[1], rawDynBlack[2], rawDynBlack[3])
                 }
             } else {
-                currentCalibration?.dynamicBlackLevel ?: (if (whiteLevel <= 1023.0f) floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f) else floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f))
+                staticBlack
             }
 
             // Temporal EMA filter (alpha = 0.20) to eliminate sub-code shadow flickering in log curve

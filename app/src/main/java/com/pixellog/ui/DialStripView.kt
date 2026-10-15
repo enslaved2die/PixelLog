@@ -213,6 +213,20 @@ class DialStripView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * Smoothly positions the dial at a continuous fractional index (sub-tick position).
+     * Used in Auto Exposure / Auto WB mode to smoothly glide along with the camera's
+     * continuous in-between values without snapping to discrete manual presets.
+     */
+    fun setContinuousPosition(fractionalIndex: Float) {
+        if (isDragging) return
+        scroller.forceFinished(true)
+        val clamped = fractionalIndex.coerceIn(0f, steps.toFloat())
+        scrollOffset = clamped * tickSpacing
+        lastNotifiedIndex = clamped.roundToInt()
+        invalidate()
+    }
+
     private fun getFraction(): Float {
         val totalLength = steps * tickSpacing
         return if (totalLength > 0f) (scrollOffset / totalLength).coerceIn(0f, 1f) else 0f

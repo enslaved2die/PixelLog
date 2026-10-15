@@ -42,20 +42,19 @@ int getCfaChannel(ivec2 p, int pattern) {
 }
 
 // Fetch raw sample with per-channel black level subtraction.
-// DO NOT clamp negatives to 0.0 (Phase 2.1) so dark noise is preserved.
+// Normalize raw uint Bayer samples using (float(rawVal) - blackLevel) / max(1.0, uWhiteLevel - blackLevel)
+// clamped to >= 0.0 so both 10-bit and 12-bit iDCG normalize cleanly to [0.0, 1.0] linear float.
 float fetchLinearSample(ivec2 p, int pattern) {
     p = clamp(p, ivec2(0), uSensorResolution - ivec2(1));
     uint rawInt = texelFetch(uRawBayerTexture, p, 0).r;
     float raw = float(rawInt);
 
     // 2D Spatial quad index: 0:(0,0) TL, 1:(1,0) TR, 2:(0,1) BL, 3:(1,1) BR
-    // Matches Android SENSOR_BLACK_LEVEL_PATTERN specification
+    // Matches Android SENSOR_BLACK_LEVEL_PATTERN specification: (y & 1) * 2 + (x & 1)
     int quadIdx = ((p.y & 1) << 1) | (p.x & 1);
     float bl = uBlackLevel[quadIdx];
-    float wl = uWhiteLevel;
 
-    // Linear un-clamped normalization
-    return (raw - bl) / max(wl - bl, 1e-6);
+    return max(0.0, (raw - bl) / max(1.0, uWhiteLevel - bl));
 }
 
 // Phase 3: Branchless C1 Log2 + Linear Toe Transfer Function

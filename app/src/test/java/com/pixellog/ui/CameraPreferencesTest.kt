@@ -37,7 +37,7 @@ class CameraPreferencesTest {
         cameraPreferences.bitratePreset = PixelLogEncoderPipeline.BitratePreset.MBPS_220
         cameraPreferences.colorTransfer = PixelLogEncoderPipeline.ColorTransferMode.HLG
         cameraPreferences.isBakeLutActive = true
-        cameraPreferences.selectedLutId = "dwg"
+        cameraPreferences.selectedLutId = "agx_punchy"
         cameraPreferences.activeParamTabName = "ISO"
         cameraPreferences.storageTargetId = "usb_samsung_t7"
 
@@ -49,7 +49,7 @@ class CameraPreferencesTest {
         assertEquals(PixelLogEncoderPipeline.BitratePreset.MBPS_220, restoredPrefs.bitratePreset)
         assertEquals(PixelLogEncoderPipeline.ColorTransferMode.HLG, restoredPrefs.colorTransfer)
         assertTrue(restoredPrefs.isBakeLutActive)
-        assertEquals("dwg", restoredPrefs.selectedLutId)
+        assertEquals("agx_punchy", restoredPrefs.selectedLutId)
         assertEquals("ISO", restoredPrefs.activeParamTabName)
         assertEquals("usb_samsung_t7", restoredPrefs.storageTargetId)
     }

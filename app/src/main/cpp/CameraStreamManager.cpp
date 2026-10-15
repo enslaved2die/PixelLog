@@ -13,8 +13,8 @@ CameraStreamManager::CameraStreamManager()
       mUnmatchedFrames(0),
       mDroppedFrames(0) {
     mCurrentMetadata.timestampNs = 0;
-    mCurrentMetadata.whiteLevel = 4095.0f;
-    mCurrentMetadata.dynamicBlackLevel = { 256.0f, 256.0f, 256.0f, 256.0f };
+    mCurrentMetadata.whiteLevel = 1023.0f;
+    mCurrentMetadata.dynamicBlackLevel = { 64.0f, 64.0f, 64.0f, 64.0f };
     mCurrentMetadata.neutralColorPoint[0] = 0.55f;
     mCurrentMetadata.neutralColorPoint[1] = 1.0f;
     mCurrentMetadata.neutralColorPoint[2] = 0.70f;

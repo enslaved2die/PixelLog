@@ -633,15 +633,13 @@ def main():
     )
 
     # 5. Populate app/src/main/assets/luts for camera app built-in selection
+    # (Note: DWG, ACEScg, and Linear are post-production pipeline LUTs and kept strictly in post_production/)
     asset_targets = [
         ("PixelLog_to_Rec709_Display_33.cube", "PixelLog_to_Rec709_Display.cube"),
         ("PixelLog_to_AgX_Rec709_33.cube", "PixelLog_to_AgX_Base.cube"),
         ("PixelLog_to_AgX_Punchy_33.cube", "PixelLog_to_AgX_Punchy.cube"),
         ("PixelLog_to_AgX_HLG_33.cube", "PixelLog_to_AgX_HLG.cube"),
         ("PixelLog_to_AgX_Punchy_HLG_33.cube", "PixelLog_to_AgX_Punchy_HLG.cube"),
-        ("PixelLog_to_DWG_Intermediate_33.cube", "PixelLog_to_DWG_Intermediate.cube"),
-        ("PixelLog_to_ACEScg_33.cube", "PixelLog_to_ACEScg.cube"),
-        ("PixelLog_to_Rec2020_Linear_33.cube", "PixelLog_to_Rec2020_Linear.cube"),
     ]
     for src_name, dst_name in asset_targets:
         src = os.path.join(post_dir, src_name)

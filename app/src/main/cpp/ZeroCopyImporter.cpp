@@ -120,8 +120,8 @@ GLuint ZeroCopyImporter::importHardwareBufferToTexture(AHardwareBuffer* hardware
         if (stepX < 2) stepX = 2;
         if (stepY < 2) stepY = 2;
 
-        float bl = blackLevel > 0.0f ? blackLevel : 256.0f;
-        float wl = whiteLevel > (bl + 1.0f) ? whiteLevel : 4095.0f;
+        float bl = blackLevel >= 0.0f ? blackLevel : 0.0f;
+        float wl = whiteLevel > (bl + 1.0f) ? whiteLevel : (bl + 1.0f);
         float rangeInv = 1.0f / (wl - bl);
 
         double weightedSum = 0.0;

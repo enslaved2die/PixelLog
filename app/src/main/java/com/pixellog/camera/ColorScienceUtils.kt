@@ -28,8 +28,8 @@ data class CameraCalibration(
     ),
     val illuminant1: Int = 17, // Standard-A (2856K)
     val illuminant2: Int = 21, // D65 (6504K)
-    val whiteLevel: Float = 4095.0f,
-    val dynamicBlackLevel: FloatArray = floatArrayOf(256.0f, 256.0f, 256.0f, 256.0f),
+    val whiteLevel: Float = 1023.0f,
+    val dynamicBlackLevel: FloatArray = floatArrayOf(64.0f, 64.0f, 64.0f, 64.0f),
     val bayerPattern: Int = 0 // 0: RGGB
 ) {
     override fun equals(other: Any?): Boolean {
